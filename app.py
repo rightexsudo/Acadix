@@ -20,19 +20,21 @@ def scrape_single_platform(platform_name, search_topic, formatted_topic):
                     entry = f"{title}\n{link}"
                     if entry not in courses_data:
                         courses_data.append(entry)
-        if platform_name == "edraak":
-            url = f"https://www.edraak.org/explore/?query={search_topic}"
-        elif platform_name == "m3aarif":
-            url = f"https://www.m3aarf.com/?search_for={search_topic}"
-        elif platform_name == "greatlearning":
-            url = f"https://www.mygreatlearning.com/{formatted_topic}/free-courses"
-        elif platform_name == "w3schools":
-            url = f"https://www.w3schools.com/{search_topic}/index.php"
-        elif platform_name == "netacad":
-            url = f"https://www.netacad.com/catalogs/learn?search={search_topic}"
-        else:
-            return None
-        
+        if len(title) > 5:
+            if href.startswith('/'):
+                if platform_name == "edraak":
+                    url = f"https://www.edraak.org/explore/?query={search_topic}"
+                elif platform_name == "m3aarif":
+                    url = f"https://www.m3aarf.com/?search_for={search_topic}"
+                elif platform_name == "greatlearning":
+                    url = f"https://www.mygreatlearning.com/{formatted_topic}/free-courses"
+                elif platform_name == "w3schools":
+                    url = f"https://www.w3schools.com/{search_topic}/index.php"
+                elif platform_name == "netacad":
+                    url = f"https://www.netacad.com/catalogs/learn?search={search_topic}"
+                else:
+                    return None
+            
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(url, headers=headers, timeout=5)
         
@@ -67,6 +69,7 @@ def scrape_single_platform(platform_name, search_topic, formatted_topic):
 
         if courses_data:
             file_name = f"courses_{platform_name}_{formatted_topic}.txt"
+            file_name = "".join(c for c in file_name if c.isalnum() or c in ('_', '.', '-'))
             with open(file_name, "w", encoding="utf-8") as f:
                 for c in courses_data:
                     f.write(f"{c}\n\n")
