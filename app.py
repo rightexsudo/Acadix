@@ -3,13 +3,23 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from youtubesearchpython import VideosSearch
 app = Flask(__name__)
 
 
 def scrape_single_platform(platform_name, search_topic, formatted_topic):
     generated_file = None
     try:
+        if platform_name == "youtube":
+            videos_search = VideosSearch(search_topic, limit=10)
+            results = videos_search.result().get('result', [])
+            for video in results:
+                title = video.get('title')
+                link = video.get('link')
+                if title and link:
+                    entry = f"{title}\n{link}"
+                    if entry not in courses_data:
+                        courses_data.append(entry)
         if platform_name == "edraak":
             url = f"https://www.edraak.org/explore/?query={search_topic}"
         elif platform_name == "m3aarif":
@@ -20,8 +30,6 @@ def scrape_single_platform(platform_name, search_topic, formatted_topic):
             url = f"https://www.w3schools.com/{search_topic}/index.php"
         elif platform_name == "netacad":
             url = f"https://www.netacad.com/catalogs/learn?search={search_topic}"
-        elif platform_name == "youtube":
-            url = f"https://www.youtube.com/results?search_query={search_topic}"
         else:
             return None
         
