@@ -2,34 +2,47 @@ from flask import Flask, render_template_string, request
 import os
 import urllib.parse
 from youtubesearchpython import VideosSearch
-import google.generativeai as genai
+from google import genai
 
 app = Flask(__name__)
 
-# إعداد مفتاح الذكاء الاصطناعي
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 def get_detailed_ai_roadmap(search_topic):
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = f"""
-        أنت مرشد أكاديمي ومهني خبير جداً. أريد خريطة طريق تعليمية مفصلة واحترافية باللغة العربية لموضوع: '{search_topic}'.
-        قم بتقسيم الخريطة إلى 3 مراحل واضحة:
-        1. مرحلة البداية والأساسيات (للمبتدئين تماماً).
-        2. مرحلة التعمق والممارسة التطبيقية.
-        3. مرحلة الاحتراف والمشاريع العملية.
-        اكتب المحطة بشكل منظم، احترافي، ومباشر دون حشو زائد.
+        أنت مستشار أكاديمي وخبير تعليمي رفيع المستوى. بصفتك موجهًا ومستشارًا في مجال '{search_topic}'، قم بإعداد "خارطة طريق شمولية واحترافية" باللغة العربية للراغبين في إتقان هذا المجال من الصفر وحتى الاحتراف.
+
+        يرجى تنظيم الإجابة وفق الهيكل التالي وبشكل مباشر وواضح:
+
+        🎯 **الملخص التنفيذي:**
+        - أفكار جوهرية عن أهمية مجال '{search_topic}' في سوق العمل والتطبيق العملي (في سطرين).
+
+        🗺️ **مراحل خارطة الطريق:**
+        1. 🟢 **المرحلة الأولى: التأسيس والبناء (المبتدئ):**
+           - أهم المفاهيم الأساسية والأدوات التي يجب إتقانها أولاً.
+        2. 🟡 **المرحلة الثانية: التوسع والتمكين (المتوسط):**
+           - المهارات التطبيقية والأطر التخصصية وطبيعة المشاريع الصغيرة للتدريب.
+        3. 🔴 **المرحلة الثالثة: الاحتراف وسوق العمل (المتقدم):**
+           - بناء البورتفوليو (المعرض الشخصي)، بناء المشاريع الحقيقية، وأفضل الممارسات المتقدمة.
+
+        💡 **نصيحة ذهبية للنجاح:**
+        - نصيحة سريعة ومحفزة للالتزام والاستمرار والاستفادة القصوى من المصادر.
         """
-        response = model.generate_content(prompt)
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
         return response.text
     except Exception as e:
-        return "عذراً، تعذر توليد خريطة الطريق التفصيلية حالياً."
+        print("CRITICAL AI ERROR:", str(e))
+        return f"عذراً، تعذر جلب خريطة الطريق حالياً: {str(e)}"
 
 def search_courses(search_topic):
     courses = []
     
-    # 1. جلب عدد أكبر من دورات يوتيوب (حتى 10 نتائج)
     try:
         videos_search = VideosSearch(search_topic, limit=10)
         results = videos_search.result().get('result', [])
@@ -43,18 +56,17 @@ def search_courses(search_topic):
                     'link': link
                 })
     except Exception as e:
-        print("YouTube Error:", e)
+        print("YouTube Search Error:", e)
 
-    # 2. توليد روابط بحث مباشرة لأكبر عدد من المنصات العالمية والعربية (تصل لأكثر من 10+ مصادر)
     encoded_topic = urllib.parse.quote(search_topic)
     platforms_search = [
-        {'platform': 'منصة مَعارف (M3aarf)', 'title': f"دورات وتدريبات '{search_topic}'", 'link': f"https://www.m3aarf.com/?search_for={encoded_topic}"},
-        {'platform': 'منصة إدراك (Edraak)', 'title': f"مساقات وبرامج '{search_topic}'", 'link': f"https://www.edraak.org/explore/?query={encoded_topic}"},
-        {'platform': 'منصة Alison', 'title': f"كورسات مجانية لـ '{search_topic}'", 'link': f"https://alison.com/courses?query={encoded_topic}"},
-        {'platform': 'كورسيرا (Coursera)', 'title': f"تخصصات وشهادات '{search_topic}'", 'link': f"https://www.coursera.org/search?query={encoded_topic}"},
-        {'platform': 'يوديمي (Udemy)', 'title': f"أفضل دورات '{search_topic}' الشاملة", 'link': f"https://www.udemy.com/courses/search/?q={encoded_topic}"},
-        {'platform': 'رواق (Rwaq)', 'title': f"مقررات عربية أكاديمية في '{search_topic}'", 'link': f"https://www.rwaq.org/courses?utf8=✓&query={encoded_topic}"},
-        {'platform': 'مايكروسوفت ليرن (Microsoft Learn)', 'title': f"مسارات تقنية ومهنية لـ '{search_topic}'", 'link': f"https://learn.microsoft.com/en-us/search/?terms={encoded_topic}"}
+        {'platform': 'منصة مَعارف (M3aarf)', 'title': f"مسارات ودورات '{search_topic}' المتوفرة", 'link': f"https://www.m3aarf.com/?search_for={encoded_topic}"},
+        {'platform': 'منصة إدراك (Edraak)', 'title': f"مساقات وبرامج '{search_topic}' المجانية", 'link': f"https://www.edraak.org/explore/?query={encoded_topic}"},
+        {'platform': 'منصة Alison', 'title': f"دورات وتخصصات مجانية لـ '{search_topic}'", 'link': f"https://alison.com/courses?query={encoded_topic}"},
+        {'platform': 'كورسيرا (Coursera)', 'title': f"شهادات وبرامج أكاديمية لـ '{search_topic}'", 'link': f"https://www.coursera.org/search?query={encoded_topic}"},
+        {'platform': 'يوديمي (Udemy)', 'title': f"أبرز الدورات التدريبية الشاملة لـ '{search_topic}'", 'link': f"https://www.udemy.com/courses/search/?q={encoded_topic}"},
+        {'platform': 'رواق (Rwaq)', 'title': f"مقررات دراسية في '{search_topic}'", 'link': f"https://www.rwaq.org/courses?utf8=✓&query={encoded_topic}"},
+        {'platform': 'مايكروسوفت ليرن (Microsoft Learn)', 'title': f"مسارات تعلم مسارات تقنية لـ '{search_topic}'", 'link': f"https://learn.microsoft.com/en-us/search/?terms={encoded_topic}"}
     ]
     
     for p in platforms_search:
@@ -68,7 +80,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Acadix AI Pro - CourseFinder</title>
+    <title>Acadix</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&display=swap" rel="stylesheet">
@@ -101,7 +113,7 @@ HTML_TEMPLATE = """
         .main-wrapper {
             position: relative;
             width: 100%;
-            max-width: 700px;
+            max-width: 720px;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -197,22 +209,24 @@ HTML_TEMPLATE = """
             background: rgba(138, 64, 187, 0.12);
             border: 1px solid rgba(192, 132, 252, 0.4);
             border-radius: 14px;
-            padding: 18px;
+            padding: 20px;
             margin-top: 25px;
             text-align: right;
         }
 
         .ai-title {
-            font-size: 14px;
+            font-size: 15px;
             color: #c084fc;
             font-weight: 700;
-            margin-bottom: 8px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid rgba(192, 132, 252, 0.2);
+            padding-bottom: 6px;
         }
 
         .ai-content {
             font-size: 13.5px;
             color: #e2e8f0;
-            line-height: 1.6;
+            line-height: 1.7;
             white-space: pre-line;
         }
 
@@ -227,7 +241,7 @@ HTML_TEMPLATE = """
             font-size: 14px;
             font-weight: 600;
             color: #c084fc;
-            margin-bottom: 10px;
+            margin-bottom: 12px;
             margin-top: 20px;
             text-align: right;
         }
@@ -300,21 +314,21 @@ HTML_TEMPLATE = """
                 <button type="submit" id="submitBtn" class="submit-btn">توليد الخريطة الذكية واستعراض المصادر</button>
             </form>
 
-            <div class="loader" id="loaderText">جاري تحليل الطلب وبناء خارطة الطريق الشاملة...</div>
+            <div class="loader" id="loaderText">الذكاء الاصطناعي يبني خارطة طريق شمولية ويجمع المصادر...</div>
 
             {% if searched %}
                 <div class="ai-roadmap-box">
-                    <div class="ai-title"> خارطة الطريق الاحترافية من Acadix</div>
+                    <div class="ai-title"> خارطة الطريق التعليمية الشاملة من Acadix </div>
                     <div class="ai-content">{{ roadmap }}</div>
                 </div>
 
                 <div class="results-section">
-                    <div class="section-subtitle"> أرشيف الدورات ومصادر التعلم </div>
+                    <div class="section-subtitle"> أرشيف الدورات ومصادر التعلم المباشرة:</div>
                     {% for course in courses %}
                         <div class="course-card">
                             <div class="course-platform">{{ course.platform }}</div>
                             <div class="course-title">{{ course.title }}</div>
-                            <a href="{{ course.link }}" target="_blank" class="course-link">الانتقال للمنصة ↗</a>
+                            <a href="{{ course.link }}" target="_blank" class="course-link">الانتقال للمحتوى ↗</a>
                         </div>
                     {% endfor %}
                 </div>
@@ -332,7 +346,7 @@ HTML_TEMPLATE = """
             if(inputField.value.trim() !== "") {
                 submitBtn.style.opacity = '0.7';
                 submitBtn.disabled = true;
-                submitBtn.innerText = 'جاري التوليد...';
+                submitBtn.innerText = 'جاري التوليد والتحليل...';
                 loader.style.display = 'block';
             }
         });
