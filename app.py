@@ -1,125 +1,93 @@
-from flask import Flask, render_template_string, request, send_file
+from flask import Flask, render_template_string, request
 import os
-import requests
-from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import urllib.parse
 from youtubesearchpython import VideosSearch
+import google.generativeai as genai
+
 app = Flask(__name__)
 
+# إعداد مفتاح الذكاء الاصطناعي
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+genai.configure(api_key=GEMINI_API_KEY)
 
-def scrape_single_platform(platform_name, search_topic, formatted_topic):
-    generated_file = None
+def get_detailed_ai_roadmap(search_topic):
     try:
-        if platform_name == "youtube":
-            videos_search = VideosSearch(search_topic, limit=10)
-            results = videos_search.result().get('result', [])
-            for video in results:
-                title = video.get('title')
-                link = video.get('link')
-                if title and link:
-                    entry = f"{title}\n{link}"
-                    if entry not in courses_data:
-                        courses_data.append(entry)
-        if len(title) > 5:
-            if href.startswith('/'):
-                if platform_name == "edraak":
-                    url = f"https://www.edraak.org/explore/?query={search_topic}"
-                elif platform_name == "m3aarif":
-                    url = f"https://www.m3aarf.com/?search_for={search_topic}"
-                elif platform_name == "greatlearning":
-                    url = f"https://www.mygreatlearning.com/{formatted_topic}/free-courses"
-                elif platform_name == "w3schools":
-                    url = f"https://www.w3schools.com/{search_topic}/index.php"
-                elif platform_name == "netacad":
-                    url = f"https://www.netacad.com/catalogs/learn?search={search_topic}"
-                else:
-                    return None
-            
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        response = requests.get(url, headers=headers, timeout=5)
-        
-        if response.status_code != 200:
-            return None
-            
-        soup = BeautifulSoup(response.text, 'html.parser')
-        courses_data = []
-        for a_tag in soup.find_all('a', href=True):
-            href = a_tag['href']
-            title = a_tag.get_text(strip=True)
-            if len(title) > 3 and search_topic.lower() in title.lower():
-                if href.startswith('/'):
-                    if platform_name == "edraak":
-                        full_url = f"https://www.edraak.org{href}"
-                    elif platform_name == "m3aarif":
-                        full_url = f"https://www.m3aarf.com{href}"
-                    elif platform_name == "w3schools":
-                        full_url = f"https://www.w3schools.com{href}"
-                    elif platform_name == "netacad":
-                        full_url = f"https://www.netacad.com{href}"
-                    elif platform_name == "youtube":
-                        full_url = f"https://www.youtube.com{href}"
-                    else:
-                        full_url = f"https://www.mygreatlearning.com{href}"
-                else:
-                    full_url = href
-                
-                entry = f"{title}\n{full_url}"
-                if entry not in courses_data:
-                    courses_data.append(entry)
-
-        if courses_data:
-            file_name = f"courses_{platform_name}_{formatted_topic}.txt"
-            file_name = "".join(c for c in file_name if c.isalnum() or c in ('_', '.', '-'))
-            with open(file_name, "w", encoding="utf-8") as f:
-                for c in courses_data:
-                    f.write(f"{c}\n\n")
-            generated_file = file_name
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"""
+        أنت مرشد أكاديمي ومهني خبير جداً. أريد خريطة طريق تعليمية مفصلة واحترافية باللغة العربية لموضوع: '{search_topic}'.
+        قم بتقسيم الخريطة إلى 3 مراحل واضحة:
+        1. مرحلة البداية والأساسيات (للمبتدئين تماماً).
+        2. مرحلة التعمق والممارسة التطبيقية.
+        3. مرحلة الاحتراف والمشاريع العملية.
+        اكتب المحطة بشكل منظم، احترافي، ومباشر دون حشو زائد.
+        """
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        pass
-        
-    return generated_file
+        return "عذراً، تعذر توليد خريطة الطريق التفصيلية حالياً."
 
-def run_scraper(search_topic):
-    platforms = ["greatlearning", "edraak", "m3aarif", "w3schools", "youtube"]
-    formatted_topic = search_topic.strip().lower().replace(" ", "-")
+def search_courses(search_topic):
+    courses = []
     
-    generated_files = []
-    with ThreadPoolExecutor(max_workers=len(platforms)) as executor:
-        futures = {executor.submit(scrape_single_platform, p, search_topic, formatted_topic): p for p in platforms}
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                generated_files.append(res)
-                
-    return generated_files
+    # 1. جلب عدد أكبر من دورات يوتيوب (حتى 10 نتائج)
+    try:
+        videos_search = VideosSearch(search_topic, limit=10)
+        results = videos_search.result().get('result', [])
+        for video in results:
+            title = video.get('title')
+            link = video.get('link')
+            if title and link:
+                courses.append({
+                    'platform': 'يوتيوب (YouTube)',
+                    'title': title,
+                    'link': link
+                })
+    except Exception as e:
+        print("YouTube Error:", e)
 
+    # 2. توليد روابط بحث مباشرة لأكبر عدد من المنصات العالمية والعربية (تصل لأكثر من 10+ مصادر)
+    encoded_topic = urllib.parse.quote(search_topic)
+    platforms_search = [
+        {'platform': 'منصة مَعارف (M3aarf)', 'title': f"دورات وتدريبات '{search_topic}'", 'link': f"https://www.m3aarf.com/?search_for={encoded_topic}"},
+        {'platform': 'منصة إدراك (Edraak)', 'title': f"مساقات وبرامج '{search_topic}'", 'link': f"https://www.edraak.org/explore/?query={encoded_topic}"},
+        {'platform': 'منصة Alison', 'title': f"كورسات مجانية لـ '{search_topic}'", 'link': f"https://alison.com/courses?query={encoded_topic}"},
+        {'platform': 'كورسيرا (Coursera)', 'title': f"تخصصات وشهادات '{search_topic}'", 'link': f"https://www.coursera.org/search?query={encoded_topic}"},
+        {'platform': 'يوديمي (Udemy)', 'title': f"أفضل دورات '{search_topic}' الشاملة", 'link': f"https://www.udemy.com/courses/search/?q={encoded_topic}"},
+        {'platform': 'رواق (Rwaq)', 'title': f"مقررات عربية أكاديمية في '{search_topic}'", 'link': f"https://www.rwaq.org/courses?utf8=✓&query={encoded_topic}"},
+        {'platform': 'مايكروسوفت ليرن (Microsoft Learn)', 'title': f"مسارات تقنية ومهنية لـ '{search_topic}'", 'link': f"https://learn.microsoft.com/en-us/search/?terms={encoded_topic}"}
+    ]
+    
+    for p in platforms_search:
+        courses.append(p)
+
+    return courses
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&display=swap" rel="stylesheet">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Acadix</title>
+    <title>Acadix AI Pro - CourseFinder</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&display=swap" rel="stylesheet">
+    
     <style>
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
-            font-family: 'Abril Fatface', cursive;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
 
         body {
-            /* الخلفية */
             background-color: #121212;
             background-image: repeating-linear-gradient(
                 135deg,
                 rgba(255, 255, 255, 0.08) 0px,
                 rgba(255, 255, 255, 0.08) 2px,
-                transparent 2px, /*حجم تدريخ الخط الرمادي*/
+                transparent 2px,
                 transparent 10px
             );
             color: #ffffff;
@@ -133,13 +101,12 @@ HTML_TEMPLATE = """
         .main-wrapper {
             position: relative;
             width: 100%;
-            max-width: 520px;
+            max-width: 700px;
             display: flex;
             flex-direction: column;
             align-items: center;
         }
 
-        /* حاوية الشعار والأيقونة في الأعلى */
         .brand-header {
             text-align: center;
             margin-bottom: -22px;
@@ -153,8 +120,9 @@ HTML_TEMPLATE = """
         }
 
         .brand-title {
-            font-size: 38px;
-            font-weight: 800;
+            font-family: 'Abril Fatface', serif;
+            font-size: 42px;
+            font-weight: 400;
             letter-spacing: 1.5px;
             color: #ffffff;
             margin-top: -5px;
@@ -166,25 +134,17 @@ HTML_TEMPLATE = """
             text-shadow: 0 0 12px rgba(192, 132, 252, 0.6);
         }
 
-        /* البطاقة الرئيسية */
         .card-container {
-            background: rgba(30, 31, 38, 0.85);
+            background: rgba(30, 31, 38, 0.9);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
             border: 1px solid rgba(255, 255, 255, 0.12);
             border-radius: 24px;
             padding: 50px 30px 30px 30px;
             width: 100%;
-            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.7);
-            position: relative;
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.8);
         }
 
-        .theme-btn:hover {
-            border-color: #a855f7;
-            color: #ffffff;
-        }
-
-        /* حقل البحث */
         .search-box {
             margin-top: 15px;
             margin-bottom: 15px;
@@ -193,7 +153,7 @@ HTML_TEMPLATE = """
         .search-input {
             width: 100%;
             padding: 14px 18px;
-            background: rgba(18, 18, 22, 0.6);
+            background: rgba(18, 18, 22, 0.7);
             border: 1.5px solid #8A40BB;
             border-radius: 10px;
             color: #ffffff;
@@ -207,7 +167,6 @@ HTML_TEMPLATE = """
             color: #9ca3af;
         }
 
-        /* زر البحث والتأكيد المتدرج */
         .submit-btn {
             width: 100%;
             padding: 14px;
@@ -234,53 +193,93 @@ HTML_TEMPLATE = """
             font-size: 14px;
         }
 
-        /* صندوق النتائج */
-        .results-box {
-            margin-top: 25px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
+        .ai-roadmap-box {
+            background: rgba(138, 64, 187, 0.12);
+            border: 1px solid rgba(192, 132, 252, 0.4);
             border-radius: 14px;
             padding: 18px;
-            background: rgba(20, 20, 25, 0.5);
+            margin-top: 25px;
             text-align: right;
         }
 
-        .results-title {
+        .ai-title {
+            font-size: 14px;
+            color: #c084fc;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .ai-content {
+            font-size: 13.5px;
+            color: #e2e8f0;
+            line-height: 1.6;
+            white-space: pre-line;
+        }
+
+        .results-section {
+            margin-top: 20px;
+            max-height: 400px;
+            overflow-y: auto;
+            padding-right: 5px;
+        }
+
+        .section-subtitle {
             font-size: 14px;
             font-weight: 600;
-            color: #ffffff;
-            margin-bottom: 4px;
-            text-align: left;
+            color: #c084fc;
+            margin-bottom: 10px;
+            margin-top: 20px;
+            text-align: right;
         }
 
-        .results-desc {
-            font-size: 12.5px;
-            color: #9ca3af;
-            margin-bottom: 12px;
+        .course-card {
+            background: rgba(20, 20, 25, 0.8);
+            border: 1px solid rgba(138, 64, 187, 0.3);
+            border-radius: 12px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+            text-align: right;
+            transition: transform 0.2s;
         }
 
-        .download-link {
-            display: block;
-            background: linear-gradient(90deg, #8A40BB 0%, #374151 100%);
+        .course-card:hover {
+            border-color: #a855f7;
+            transform: translateY(-2px);
+        }
+
+        .course-platform {
+            font-size: 11px;
+            color: #c084fc;
+            font-weight: 600;
+            margin-bottom: 3px;
+        }
+
+        .course-title {
+            font-size: 13px;
             color: #ffffff;
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        .course-link {
+            display: inline-block;
+            background: #8A40BB;
+            color: white;
             text-decoration: none;
-            padding: 11px 15px;
-            border-radius: 8px;
-            font-size: 13.5px;
-            margin-top: 8px;
-            text-align: center;
-            border: 1px solid rgba(138, 64, 187, 0.4);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11.5px;
             font-weight: 500;
         }
 
-        .download-link:hover {
-            background: linear-gradient(90deg, #9333ea 0%, #4b5563 100%);
+        .course-link:hover {
+            background: #9333ea;
         }
     </style>
 </head>
 <body>
 
     <div class="main-wrapper">
-        <!-- الشعار في الأعلى -->
         <div class="brand-header">
             <svg class="logo-svg" viewBox="0 0 120 100" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M60 12 L105 32 L60 52 L15 32 Z" stroke="#E2E8F0" stroke-width="4.5" stroke-linejoin="round"/>
@@ -293,25 +292,30 @@ HTML_TEMPLATE = """
             <h1 class="brand-title"><span class="highlight-a">A</span>cadix</h1>
         </div>
 
-        <!-- البطاقة الأساسية  -->
         <div class="card-container">
-
-            
             <form id="searchForm" method="POST">
                 <div class="search-box">
-                    <input type="text" id="topicInput" name="topic" class="search-input" placeholder="أبحث عن دورة" required>
+                    <input type="text" id="topicInput" name="topic" class="search-input" placeholder="ما المجال الذي ترغب باحترافه اليوم؟" required>
                 </div>
-                <button type="submit" id="submitBtn" class="submit-btn">بحث وتأكيد</button>
+                <button type="submit" id="submitBtn" class="submit-btn">توليد الخريطة الذكية واستعراض المصادر</button>
             </form>
 
-            <div class="loader" id="loaderText">جاري البحث واستخراج الدورات...</div>
+            <div class="loader" id="loaderText">جاري تحليل الطلب وبناء خارطة الطريق الشاملة...</div>
 
-            {% if done %}
-                <div class="results-box">
-                    <div class="results-title">Acadix Course Search</div>
-                    <div class="results-desc">تمت عملية البحث بنجاح!<br>تم استخراج وحفظ الدورات في الملفات التالية:</div>
-                    {% for file in files %}
-                        <a class="download-link" href="/download/{{ file }}">تحميل الملف: {{ file }}</a>
+            {% if searched %}
+                <div class="ai-roadmap-box">
+                    <div class="ai-title"> خارطة الطريق الاحترافية من Acadix</div>
+                    <div class="ai-content">{{ roadmap }}</div>
+                </div>
+
+                <div class="results-section">
+                    <div class="section-subtitle"> أرشيف الدورات ومصادر التعلم </div>
+                    {% for course in courses %}
+                        <div class="course-card">
+                            <div class="course-platform">{{ course.platform }}</div>
+                            <div class="course-title">{{ course.title }}</div>
+                            <a href="{{ course.link }}" target="_blank" class="course-link">الانتقال للمنصة ↗</a>
+                        </div>
                     {% endfor %}
                 </div>
             {% endif %}
@@ -328,7 +332,7 @@ HTML_TEMPLATE = """
             if(inputField.value.trim() !== "") {
                 submitBtn.style.opacity = '0.7';
                 submitBtn.disabled = true;
-                submitBtn.innerText = 'جاري المعالجة...';
+                submitBtn.innerText = 'جاري التوليد...';
                 loader.style.display = 'block';
             }
         });
@@ -339,22 +343,15 @@ HTML_TEMPLATE = """
 
 @app.route("/", methods=["GET", "POST"])
 def home():
-    done = False
-    files = []
+    searched = False
+    courses = []
+    roadmap = ""
     if request.method == "POST":
         topic = request.form.get("topic")
-        files = run_scraper(topic)
-        done = True
-    return render_template_string(HTML_TEMPLATE, done=done, files=files)
-
-@app.route("/download/<path:filename>")
-def download_file(filename):
-    file_path = os.path.join(os.getcwd(), filename)
-    if os.path.exists(file_path):
-        return send_file(file_path, as_attachment=True)
-    return "الملف غير موجود", 404
-
-import os
+        roadmap = get_detailed_ai_roadmap(topic)
+        courses = search_courses(topic)
+        searched = True
+    return render_template_string(HTML_TEMPLATE, searched=searched, roadmap=roadmap, courses=courses)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

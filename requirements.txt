@@ -1,5 +1,6 @@
 Flask
+youtube-search-python
+google-generativeai
+gunicorn
 requests
 beautifulsoup4
-gunicorn
-youtube-search-python
