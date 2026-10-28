@@ -10,8 +10,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def get_detailed_ai_roadmap(search_topic):
-    try:
-        prompt = f"""
+    prompt = f"""
         أنت مستشار أكاديمي وخبير تعليمي رفيع المستوى. بصفتك موجهًا ومستشارًا في مجال '{search_topic}'، قم بإعداد "خارطة طريق شمولية واحترافية" باللغة العربية للراغبين في إتقان هذا المجال من الصفر وحتى الاحتراف.
 
         يرجى تنظيم الإجابة وفق الهيكل التالي وبشكل مباشر وواضح:
@@ -30,16 +29,20 @@ def get_detailed_ai_roadmap(search_topic):
         💡 **نصيحة ذهبية للنجاح:**
         - نصيحة سريعة ومحفزة للالتزام والاستمرار والاستفادة القصوى من المصادر.
         """
-
-        response = client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=prompt,
-        )
-        return response.text
-    except Exception as e:
-        print("CRITICAL AI ERROR:", str(e))
-        return f"عذراً، تعذر جلب خريطة الطريق حالياً: {str(e)}"
-
+    models_to_try = ['gemini-3.8-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
+    
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            continue
+            
+    return "عذراً، خوادم الذكاء الاصطناعي تشهد ضغطاً مؤقتاً حالياً. يرجى المحاولة بعد قليل أو تصفح الدورات أدناه."
 def search_courses(search_topic):
     courses = []
     
