@@ -6,7 +6,6 @@ from groq import Groq
 
 app = Flask(__name__)
 
-# تهيئة مفتاح وعميل Groq
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 client = Groq(api_key=GROQ_API_KEY)
 
