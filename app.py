@@ -138,6 +138,35 @@ HTML_TEMPLATE = """
         
         .section-box { background: rgba(22, 23, 30, 0.85); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 16px; }
         .section-title { font-size: 14px; font-weight: 600; color: #60a5fa; margin-bottom: 12px; }
+
+@media screen and (max-width: 768px) {
+    body {
+        flex-direction: column; /* جعل الصفحة تترتب عمودياً بدلاً من جنباً إلى جنب */
+        height: auto;
+        overflow: auto;
+    }
+    
+    .sidebar {
+        width: 100%; /* جعل القائمة الجانبية تأخذ عرض الشاشة كاملاً */
+        border-left: none;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        padding: 10px;
+    }
+
+    .main-content {
+        padding: 15px;
+        overflow-y: visible;
+    }
+
+    .search-box-flex {
+        flex-direction: column; 
+    }
+
+    .submit-btn {
+        padding: 12px;
+        width: 100%;
+    }
+}
     </style>
 </head>
 <body>
