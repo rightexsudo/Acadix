@@ -2,11 +2,13 @@ from flask import Flask, render_template_string, request
 import os
 import urllib.parse
 from youtubesearchpython import VideosSearch
-import requests
-from huggingface_hub import InferenceClient
+from groq import Groq
+
 app = Flask(__name__)
 
-HF_API_KEY = os.environ.get("HF_API_KEY", "")
+# تهيئة مفتاح وعميل Groq
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "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")
+client = Groq(api_key=GROQ_API_KEY)
 
 def get_detailed_ai_roadmap(search_topic):
     prompt = f"""
@@ -21,66 +23,41 @@ def get_detailed_ai_roadmap(search_topic):
     1. 🟢 المرحلة الأولى: التأسيس والبناء (المبتدئ)
     2. 🟡 المرحلة الثانية: التوسع والتمكين (المتوسط)
     3. 🔴 المرحلة الثالثة: الاحتراف وسوق العمل (المتقدم)
-    قم بنشاء صورة اذا لم تستطع انسا
-    انت لم تراها
     """
-    api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
-    
-    headers = {
-        "Authorization": f"Bearer {HF_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "inputs": f"[INST] {prompt} [/INST]",
-        "parameters": {
-            "max_new_tokens": 1500,
-            "return_full_text": False
-        }
-    }
 
     try:
-        print(f"جاري إرسال الطلب المباشر لـ AI")
-        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        print(f"جاري إرسال الطلب إلى Groq AI...")
         
-        print(f"Status Code: {response.status_code}")
-        print(f"Response Text: {response.text}")
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=4000
+        )
+        
+        content = completion.choices[0].message.content
+        if content and len(content.strip()) > 0:
+            print("✅ تم توليد خريطة الطريق بنجاح!")
+            return content
 
-        if response.status_code == 200:
-            result = response.json()
-            # معالجة الرد سواء كان قائمة أو قاموس
-            if isinstance(result, list) and len(result) > 0:
-                content = result[0].get('generated_text', '')
-            elif isinstance(result, dict):
-                content = result.get('generated_text', '')
-            else:
-                content = str(result)
-                
-            if content and len(content.strip()) > 0:
-                print(" تم توليد خريطة الطريق بنجاح!")
-                return content
-        else:
-            print(f" فشل الطلب: {response.text}")
-            
     except Exception as e:
-        print(f" خطأ في الاتصال: {str(e)}")
-        
-        return "Sorry Eror in backend , plase Ser Send Eror for support.acadix@protonmail.com"
+        print(f"⚠️ خطأ في الاتصال بـ Groq: {str(e)}")
+        return "Sorry Eror in backend , plase Send Eror for support.acadix@protonmail.com"
+
 def search_courses(search_topic):
     courses = []
-    def search_courses(search_topic):
-        try:
-            videos_search = VideosSearch(search_topic, limit=6)
-            search_result = videos_search.result()
-            if search_result and 'result' in search_result:
-                for video in search_result.get('result', []):
-                    if video and isinstance(video, dict):
-                        title = video.get('title')
-                        link = video.get('link')
-                        if title and link:
-                            courses.append({'platform': 'يوتيوب (YouTube)', 'title': str(title), 'link': str(link)})
-        except Exception as e:
-            print("YouTube Search Warning:", str(e))
+    try:
+        videos_search = VideosSearch(search_topic, limit=6)
+        search_result = videos_search.result()
+        if search_result and 'result' in search_result:
+            for video in search_result.get('result', []):
+                if video and isinstance(video, dict):
+                    title = video.get('title')
+                    link = video.get('link')
+                    if title and link:
+                        courses.append({'platform': 'يوتيوب (YouTube)', 'title': str(title), 'link': str(link)})
+    except Exception as e:
+        print("YouTube Search Warning:", str(e))
 
     if not courses:
         encoded_topic = urllib.parse.quote(search_topic)
@@ -150,11 +127,6 @@ HTML_TEMPLATE = """
         .tag-pill { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 6px 12px; border-radius: 20px; font-size: 12px; color: #cbd5e1; cursor: pointer; transition: 0.2s; }
         .tag-pill:hover { background: #8A40BB; color: #fff; border-color: #8A40BB; }
 
-        .right-panel { width: 320px; background: rgba(14, 15, 20, 0.95); border-right: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; padding: 20px; gap: 20px; overflow-y: auto; }
-        
-        .section-box { background: rgba(22, 23, 30, 0.85); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 16px; }
-        .section-title { font-size: 14px; font-weight: 600; color: #60a5fa; margin-bottom: 12px; }
-        
         .ai-roadmap-box { background: rgba(138, 64, 187, 0.08); border: 1px solid rgba(192, 132, 252, 0.25); border-radius: 16px; padding: 20px; }
         .ai-content { font-size: 14px; color: #cbd5e1; line-height: 1.8; white-space: pre-line; }
 
@@ -164,6 +136,9 @@ HTML_TEMPLATE = """
         .course-platform { font-size: 11px; color: #3b82f6; font-weight: 600; margin-bottom: 4px; }
         .course-title { font-size: 13px; color: #fff; margin-bottom: 10px; line-height: 1.4; }
         .course-link { display: inline-block; background: #8A40BB; color: white; text-decoration: none; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+        
+        .section-box { background: rgba(22, 23, 30, 0.85); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 16px; }
+        .section-title { font-size: 14px; font-weight: 600; color: #60a5fa; margin-bottom: 12px; }
     </style>
 </head>
 <body>
@@ -209,32 +184,27 @@ HTML_TEMPLATE = """
 
             {% if searched %}
             <div class="ai-roadmap-box" id="roadmapContainer">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(192, 132, 252, 0.2); padding-bottom: 8px;">
-    <div class="section-title" style="margin-bottom: 0;"> خارطة الطريق التعليمية الشاملة</div>
-        <!-- زر التحميل -->
-        <button onclick="downloadRoadmapAsImage()" style="background: linear-gradient(135deg, #8A40BB, #3b82f6); color: white; border: none; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px;">
-             تحميل كصورة
-            </button>
-        </div>
-    <div class="ai-content">{{ roadmap }}</div>
-    </div>
-                <div class="ai-roadmap-box">
-                    <div class="section-title"> خارطة الطريق التعليمية الشاملة</div>
-                    <div class="ai-content">{{ roadmap }}</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(192, 132, 252, 0.2); padding-bottom: 8px;">
+                    <div class="section-title" style="margin-bottom: 0;"> خارطة الطريق التعليمية الشاملة</div>
+                    <button onclick="downloadRoadmapAsImage()" style="background: linear-gradient(135deg, #8A40BB, #3b82f6); color: white; border: none; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                        تحميل كصورة
+                    </button>
                 </div>
+                <div class="ai-content">{{ roadmap }}</div>
+            </div>
 
-                <div>
-                    <div class="section-title"> مصادر التعلم المباشرة والدورات المقترحة:</div>
-                    <div class="courses-grid">
-                        {% for course in courses %}
-                            <div class="course-card">
-                                <div class="course-platform">{{ course.platform }}</div>
-                                <div class="course-title">{{ course.title }}</div>
-                                <a href="{{ course.link }}" target="_blank" class="course-link">الانتقال للمحتوى ↗</a>
-                            </div>
-                        {% endfor %}
-                    </div>
+            <div>
+                <div class="section-title" style="margin-top: 15px;"> مصادر التعلم المباشرة والدورات المقترحة:</div>
+                <div class="courses-grid">
+                    {% for course in courses %}
+                        <div class="course-card">
+                            <div class="course-platform">{{ course.platform }}</div>
+                            <div class="course-title">{{ course.title }}</div>
+                            <a href="{{ course.link }}" target="_blank" class="course-link">الانتقال للمحتوى ↗</a>
+                        </div>
+                    {% endfor %}
                 </div>
+            </div>
             {% endif %}
         </div>
 
@@ -283,8 +253,6 @@ HTML_TEMPLATE = """
 
     </div>
 
-
-
     <script>
         function switchTab(tabName) {
             document.querySelectorAll('.tab-section').forEach(el => el.classList.remove('active-tab'));
@@ -300,31 +268,28 @@ HTML_TEMPLATE = """
             input.value = topic;
             document.getElementById('searchForm').submit();
         }
+
         function downloadRoadmapAsImage() {
-        const roadmapElement = document.getElementById('roadmapContainer');
-    
-    // إظهار تنبيه بسيط للمستخدم أثناء المعالجة
-    const btn = event.target;
-    const originalText = btn.innerHTML;
-    btn.innerText = 'جاري الإنشاء...';
-    html2canvas(roadmapElement, {
-    backgroundColor: '#12131a', // خلفية داكنة متناسقة مع الموقع
-    scale: 2 // زيادة الجودة والدقة للضعف
-    }).then(canvas => {
-    // إنشاء رابط تنزيل تلقائي
-    const link = document.createElement('a');
-    link.download = 'Acadix-Roadmap.png';
-    link.href = canvas.toDataURL('image/png');
-    link.click();
-        
-    // إعادة النص الأصلي للزر
-    btn.innerHTML = originalText;
-    }).catch(err => {
-        console.error('Error generating image:', err);
-        btn.innerHTML = originalText;
-        alert('حدث خطأ أثناء تحميل الصورة، يرجى المحاولة مرة أخرى.');
-    });
-}
+            const roadmapElement = document.getElementById('roadmapContainer');
+            const btn = event.target;
+            const originalText = btn.innerHTML;
+            btn.innerText = 'جاري الإنشاء...';
+            
+            html2canvas(roadmapElement, {
+                backgroundColor: '#12131a',
+                scale: 2
+            }).then(canvas => {
+                const link = document.createElement('a');
+                link.download = 'Acadix-Roadmap.png';
+                link.href = canvas.toDataURL('image/png');
+                link.click();
+                btn.innerHTML = originalText;
+            }).catch(err => {
+                console.error('Error generating image:', err);
+                btn.innerHTML = originalText;
+                alert('حدث خطأ أثناء تحميل الصورة، يرجى المحاولة مرة أخرى.');
+            });
+        }
     </script>
 </body>
 </html>
