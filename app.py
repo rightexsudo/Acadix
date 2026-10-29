@@ -2,387 +2,329 @@ from flask import Flask, render_template_string, request
 import os
 import urllib.parse
 from youtubesearchpython import VideosSearch
-from google import genai
-
+import requests
+from huggingface_hub import InferenceClient
 app = Flask(__name__)
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-client = genai.Client(api_key=GEMINI_API_KEY)
+HF_API_KEY = os.environ.get("HF_API_KEY", "")
 
 def get_detailed_ai_roadmap(search_topic):
     prompt = f"""
-    أنت مستشار أكاديمي وخبير تعليمي رفيع المستوى. بصفتك موجهًا ومستشارًا في مجال '{search_topic}'، قم بإعداد "خارطة طريق شمولية واحترافية" باللغة العربية للراغبين في إتقان هذا المجال من الصفر وحتى الاحتراف.
+    أنت مستشار أكاديمي وخبير تعليمي رفيع المستوى. بصفتك موجهًا ومستشارًا في مجال '{search_topic}', قم بإعداد "خارطة طريق شمولية واحترافية" باللغة العربية للراغبين في إتقان هذا المجال من الصفر وحتى الاحتراف.
 
     يرجى تنظيم الإجابة وفق الهيكل التالي وبشكل مباشر وواضح:
 
     🎯 **الملخص التنفيذي:**
-    - أفكار جوهرية عن أهمية مجال '{search_topic}' في سوق العمل والتطبيق العملي (في سطرين).
+    - أفكار جوهرية عن أهمية مجال '{search_topic}' في سوق العمل والتطبيق العملي.
 
-    🗺️ **مراحل خارطة الطريق:**
-    1. 🟢 **المرحلة الأولى: التأسيس والبناء (المبتدئ):**
-       - أهم المفاهيم الأساسية والأدوات التي يجب إتقانها أولاً.
-    2. 🟡 **المرحلة الثانية: التوسع والتمكين (المتوسط):**
-       - المهارات التطبيقية والأطر التخصصية وطبيعة المشاريع الصغيرة للتدريب.
-    3. 🔴 **المرحلة الثالثة: الاحتراف وسوق العمل (المتقدم):**
-       - بناء البورتفوليو (المعرض الشخصي)، بناء المشاريع الحقيقية، وأفضل الممارسات المتقدمة.
-
-    💡 **نصيحة ذهبية للنجاح:**
-    - نصيحة سريعة ومحفزة للالتزام والاستمرار والاستفادة القصوى من المصادر.
+    🗺️ **مراحل خارطة الطريق (6 خطوات):**
+    1. 🟢 المرحلة الأولى: التأسيس والبناء (المبتدئ)
+    2. 🟡 المرحلة الثانية: التوسع والتمكين (المتوسط)
+    3. 🔴 المرحلة الثالثة: الاحتراف وسوق العمل (المتقدم)
+    قم بنشاء صورة اذا لم تستطع انسا
+    انت لم تراها
     """
-
-    models_to_try = ['gemini-3.8-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
+    api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
     
-    for model_name in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            print(f"Failed with {model_name}: {str(e)}")
-            continue
-            
-    return "عذراً، خوادم الذكاء الاصطناعي تشهد ضغطاً مؤقتاً حالياً. يرجى المحاولة بعد قليل أو تصفح الدورات أدناه."
+    headers = {
+        "Authorization": f"Bearer {HF_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "inputs": f"[INST] {prompt} [/INST]",
+        "parameters": {
+            "max_new_tokens": 1500,
+            "return_full_text": False
+        }
+    }
 
+    try:
+        print(f"جاري إرسال الطلب المباشر لـ AI")
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Text: {response.text}")
+
+        if response.status_code == 200:
+            result = response.json()
+            # معالجة الرد سواء كان قائمة أو قاموس
+            if isinstance(result, list) and len(result) > 0:
+                content = result[0].get('generated_text', '')
+            elif isinstance(result, dict):
+                content = result.get('generated_text', '')
+            else:
+                content = str(result)
+                
+            if content and len(content.strip()) > 0:
+                print(" تم توليد خريطة الطريق بنجاح!")
+                return content
+        else:
+            print(f" فشل الطلب: {response.text}")
+            
+    except Exception as e:
+        print(f" خطأ في الاتصال: {str(e)}")
+        
+        return "Sorry Eror in backend , plase Ser Send Eror for support.acadix@protonmail.com"
 def search_courses(search_topic):
     courses = []
-    try:
-        videos_search = VideosSearch(search_topic, limit=10)
-        search_result = videos_search.result()
-        if search_result and 'result' in search_result:
-            results = search_result.get('result', [])
-            for video in results:
-                if video and isinstance(video, dict):
-                    title = video.get('title')
-                    link = video.get('link')
-                    if title and link:
-                        courses.append({
-                            'platform': 'يوتيوب (YouTube)',
-                            'title': str(title),
-                            'link': str(link)
-                        })
-    except Exception as e:
-        print("YouTube Search Internal Error Handled:", str(e))
+    def search_courses(search_topic):
+        try:
+            videos_search = VideosSearch(search_topic, limit=6)
+            search_result = videos_search.result()
+            if search_result and 'result' in search_result:
+                for video in search_result.get('result', []):
+                    if video and isinstance(video, dict):
+                        title = video.get('title')
+                        link = video.get('link')
+                        if title and link:
+                            courses.append({'platform': 'يوتيوب (YouTube)', 'title': str(title), 'link': str(link)})
+        except Exception as e:
+            print("YouTube Search Warning:", str(e))
 
-    # 2. توليد روابط بحث للمصادر والمنصات التعليمية الكبرى
+    if not courses:
+        encoded_topic = urllib.parse.quote(search_topic)
+        courses.append({
+            'platform': 'يوتيوب (YouTube - بحث مباشر)', 
+            'title': f"عرض أفضل الفيديوهات والروابط التعليمية لـ '{search_topic}' على يوتيوب", 
+            'link': f"https://www.youtube.com/results?search_query={encoded_topic}"
+        })
+
     encoded_topic = urllib.parse.quote(search_topic)
     platforms_search = [
         {'platform': 'منصة مَعارف (M3aarf)', 'title': f"مسارات ودورات '{search_topic}' المتوفرة", 'link': f"https://www.m3aarf.com/?search_for={encoded_topic}"},
         {'platform': 'منصة إدراك (Edraak)', 'title': f"مساقات وبرامج '{search_topic}' المجانية", 'link': f"https://www.edraak.org/explore/?query={encoded_topic}"},
-        {'platform': 'منصة Alison', 'title': f"دورات وتخصصات مجانية لـ '{search_topic}'", 'link': f"https://alison.com/courses?query={encoded_topic}"},
         {'platform': 'كورسيرا (Coursera)', 'title': f"شهادات وبرامج أكاديمية لـ '{search_topic}'", 'link': f"https://www.coursera.org/search?query={encoded_topic}"},
-        {'platform': 'يوديمي (Udemy)', 'title': f"أبرز الدورات التدريبية الشاملة لـ '{search_topic}'", 'link': f"https://www.udemy.com/courses/search/?q={encoded_topic}"},
-        {'platform': 'رواق (Rwaq)', 'title': f"مقررات دراسية في '{search_topic}'", 'link': f"https://www.rwaq.org/courses?utf8=✓&query={encoded_topic}"},
-        {'platform': 'مايكروسوفت ليرن (Microsoft Learn)', 'title': f"مسارات تعلم تقنية لـ '{search_topic}'", 'link': f"https://learn.microsoft.com/en-us/search/?terms={encoded_topic}"}
+        {'platform': 'يوديمي (Udemy)', 'title': f"أبرز الدورات التدريبية لـ '{search_topic}'", 'link': f"https://www.udemy.com/courses/search/?q={encoded_topic}"}
     ]
-    
-    for p in platforms_search:
-        courses.append(p)
-
+    courses.extend(platforms_search)
     return courses
 
-# تصميم واجهة الويب المخصصة للكمبيوتر (Desktop Widescreen UI)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Acadix - AI Educational Search Engine</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <title>Acadix</title>
     <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&display=swap" rel="stylesheet">
-    
+    <!-- مكتبة تحويل العناصر إلى صور -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body {
-            background-color: #0d0e12;
-            background-image: repeating-linear-gradient(
-                135deg,
-                rgba(255, 255, 255, 0.03) 0px,
-                rgba(255, 255, 255, 0.03) 2px,
-                transparent 2px,
-                transparent 10px
-            );
-            color: #e2e8f0;
-            display: flex;
-            justify-content: center;
-            align-items: flex-start;
-            min-height: 100vh;
-            padding: 40px 20px;
+            background-color: #0b0c10;
+            background-image: repeating-linear-gradient(135deg, rgba(180, 185, 210, 0.12) 0px, rgba(180, 185, 210, 0.12) 3px, transparent 3px, transparent 14px);
+            color: #e2e8f0; display: flex; height: 100vh; overflow: hidden;
         }
+        
+        .sidebar { width: 270px; background: rgba(14, 15, 20, 0.95); border-left: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; padding: 20px; }
+        
+        .logo-area { display: flex; align-items: center; margin-bottom: 30px; padding-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+        .brand-name { font-family: 'Abril Fatface', serif; font-size: 28px; font-weight: 400; color: #fff; letter-spacing: 1px; }
+        .brand-name span { color: #c084fc; }
 
-        .main-wrapper {
-            width: 100%;
-            max-width: 900px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
+        .nav-links { list-style: none; display: flex; flex-direction: column; gap: 8px; flex-grow: 1; }
+        .nav-link { color: #94a3b8; text-decoration: none; padding: 12px 14px; border-radius: 10px; font-size: 14px; display: flex; align-items: center; gap: 10px; transition: 0.2s; cursor: pointer; }
+        .nav-link:hover, .nav-link.active { background: rgba(138, 64, 187, 0.2); color: #c084fc; font-weight: 600; }
 
-        .brand-header {
-            text-align: center;
-            margin-bottom: 20px;
-        }
+        .main-content { flex-grow: 1; overflow-y: auto; padding: 30px; display: flex; flex-direction: column; gap: 25px; }
+        .main-content::-webkit-scrollbar { width: 6px; }
+        .main-content::-webkit-scrollbar-thumb { background: #8A40BB; border-radius: 10px; }
+        
+        .tab-section { display: none; flex-direction: column; gap: 20px; }
+        .tab-section.active-tab { display: flex; }
 
-        .logo-svg {
-            width: 120px;
-            height: 95px;
-            filter: drop-shadow(0 0 20px rgba(168, 85, 247, 0.4));
-        }
+        .hero-banner { background: linear-gradient(135deg, rgba(138,64,187,0.15), rgba(59,130,246,0.1)); border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 30px; }
+        .hero-title { font-size: 28px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+        .hero-title span { color: #c084fc; }
+        .hero-desc { font-size: 14px; color: #94a3b8; margin-bottom: 20px; line-height: 1.6; }
+        
+        .search-box-flex { display: flex; gap: 10px; }
+        .search-input { flex-grow: 1; padding: 14px 18px; background: rgba(13, 14, 18, 0.9); border: 1.5px solid #8A40BB; border-radius: 12px; color: #fff; font-size: 15px; outline: none; }
+        .search-input:focus { border-color: #c084fc; box-shadow: 0 0 15px rgba(192, 132, 252, 0.3); }
+        .submit-btn { padding: 0 24px; background: linear-gradient(135deg, #8A40BB, #3b82f6); color: #fff; border: none; border-radius: 12px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        .submit-btn:hover { opacity: 0.9; }
 
-        .brand-title {
-            font-family: 'Abril Fatface', serif;
-            font-size: 48px;
-            font-weight: 400;
-            letter-spacing: 2px;
-            color: #ffffff;
-            margin-top: -5px;
-            text-shadow: 0 4px 20px rgba(0,0,0,0.9);
-        }
+        .tags-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+        .tag-pill { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 6px 12px; border-radius: 20px; font-size: 12px; color: #cbd5e1; cursor: pointer; transition: 0.2s; }
+        .tag-pill:hover { background: #8A40BB; color: #fff; border-color: #8A40BB; }
 
-        .highlight-a {
-            color: #c084fc;
-            text-shadow: 0 0 15px rgba(192, 132, 252, 0.6);
-        }
+        .right-panel { width: 320px; background: rgba(14, 15, 20, 0.95); border-right: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; padding: 20px; gap: 20px; overflow-y: auto; }
+        
+        .section-box { background: rgba(22, 23, 30, 0.85); border: 1px solid rgba(255,255,255,0.06); border-radius: 16px; padding: 16px; }
+        .section-title { font-size: 14px; font-weight: 600; color: #60a5fa; margin-bottom: 12px; }
+        
+        .ai-roadmap-box { background: rgba(138, 64, 187, 0.08); border: 1px solid rgba(192, 132, 252, 0.25); border-radius: 16px; padding: 20px; }
+        .ai-content { font-size: 14px; color: #cbd5e1; line-height: 1.8; white-space: pre-line; }
 
-        .card-container {
-            background: rgba(22, 23, 30, 0.85);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 24px;
-            padding: 40px;
-            width: 100%;
-            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.8), 0 0 30px rgba(138, 64, 187, 0.1);
-        }
-
-        .search-box {
-            margin-bottom: 20px;
-        }
-
-        .search-input {
-            width: 100%;
-            padding: 16px 20px;
-            background: rgba(13, 14, 18, 0.8);
-            border: 1.5px solid #8A40BB;
-            border-radius: 12px;
-            color: #ffffff;
-            font-size: 16px;
-            outline: none;
-            text-align: right;
-            box-shadow: inset 0 2px 5px rgba(0,0,0,0.5);
-            transition: border-color 0.3s, box-shadow 0.3s;
-        }
-
-        .search-input:focus {
-            border-color: #c084fc;
-            box-shadow: 0 0 15px rgba(192, 132, 252, 0.3), inset 0 2px 5px rgba(0,0,0,0.5);
-        }
-
-        .search-input::placeholder {
-            color: #64748b;
-        }
-
-        .submit-btn {
-            width: 100%;
-            padding: 16px;
-            background: linear-gradient(135deg, #8A40BB 0%, #6b21a8 50%, #3b82f6 100%);
-            color: white;
-            border: none;
-            border-radius: 12px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            box-shadow: 0 6px 20px rgba(138, 64, 187, 0.4);
-            transition: opacity 0.2s, transform 0.2s;
-        }
-
-        .submit-btn:hover {
-            opacity: 0.95;
-            transform: translateY(-1px);
-        }
-
-        .loader {
-            display: none;
-            text-align: center;
-            margin-top: 20px;
-            color: #60a5fa;
-            font-size: 15px;
-            font-weight: 500;
-        }
-
-        .ai-roadmap-box {
-            background: rgba(138, 64, 187, 0.08);
-            border: 1px solid rgba(192, 132, 252, 0.25);
-            border-radius: 16px;
-            padding: 24px;
-            margin-top: 30px;
-            text-align: right;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-        }
-
-        .ai-title {
-            font-size: 16px;
-            color: #c084fc;
-            font-weight: 700;
-            margin-bottom: 12px;
-            border-bottom: 1px solid rgba(192, 132, 252, 0.15);
-            padding-bottom: 8px;
-        }
-
-        .ai-content {
-            font-size: 14.5px;
-            color: #cbd5e1;
-            line-height: 1.8;
-            white-space: pre-line;
-        }
-
-        .results-section {
-            margin-top: 30px;
-            max-height: 500px;
-            overflow-y: auto;
-            padding-left: 5px;
-            padding-right: 5px;
-        }
-
-        .results-section::-webkit-scrollbar {
-            width: 6px;
-        }
-
-        .results-section::-webkit-scrollbar-track {
-            background: rgba(13, 14, 18, 0.5);
-            border-radius: 10px;
-        }
-
-        .results-section::-webkit-scrollbar-thumb {
-            background: #8A40BB;
-            border-radius: 10px;
-        }
-
-        .section-subtitle {
-            font-size: 15px;
-            font-weight: 600;
-            color: #60a5fa;
-            margin-bottom: 15px;
-            margin-top: 10px;
-            text-align: right;
-        }
-
-        .course-card {
-            background: rgba(18, 19, 26, 0.9);
-            border: 1px solid rgba(138, 64, 187, 0.25);
-            border-radius: 14px;
-            padding: 16px 20px;
-            margin-bottom: 12px;
-            text-align: right;
-            transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
-        }
-
-        .course-card:hover {
-            border-color: #3b82f6;
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(59, 130, 246, 0.15);
-        }
-
-        .course-platform {
-            font-size: 12px;
-            color: #3b82f6;
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-
-        .course-title {
-            font-size: 14px;
-            color: #ffffff;
-            margin-bottom: 10px;
-            line-height: 1.5;
-        }
-
-        .course-link {
-            display: inline-block;
-            background: linear-gradient(135deg, #8A40BB 0%, #6b21a8 100%);
-            color: white;
-            text-decoration: none;
-            padding: 6px 14px;
-            border-radius: 8px;
-            font-size: 12px;
-            font-weight: 600;
-            transition: opacity 0.2s;
-        }
-
-        .course-link:hover {
-            opacity: 0.9;
-        }
+        .courses-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 15px; }
+        .course-card { background: rgba(18, 19, 26, 0.9); border: 1px solid rgba(138, 64, 187, 0.2); border-radius: 12px; padding: 14px; transition: 0.2s; }
+        .course-card:hover { border-color: #3b82f6; transform: translateY(-2px); }
+        .course-platform { font-size: 11px; color: #3b82f6; font-weight: 600; margin-bottom: 4px; }
+        .course-title { font-size: 13px; color: #fff; margin-bottom: 10px; line-height: 1.4; }
+        .course-link { display: inline-block; background: #8A40BB; color: white; text-decoration: none; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; }
     </style>
 </head>
 <body>
 
-    <div class="main-wrapper">
-        <div class="brand-header">
-            <svg class="logo-svg" viewBox="0 0 120 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M60 12 L105 32 L60 52 L15 32 Z" stroke="#E2E8F0" stroke-width="4.5" stroke-linejoin="round"/>
-                <path d="M28 38 L28 52" stroke="#E2E8F0" stroke-width="3.5" stroke-linecap="round"/>
-                <circle cx="28" cy="55" r="3.5" fill="#E2E8F0"/>
-                <path d="M35 78 L60 35 L85 78" stroke="#E2E8F0" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M42 58 Q62 47 92 51" stroke="#E2E8F0" stroke-width="4.5" stroke-linecap="round"/>
-                <path d="M45 67 Q65 56 97 60" stroke="#E2E8F0" stroke-width="3.5" stroke-linecap="round"/>
-            </svg>
-            <h1 class="brand-title"><span class="highlight-a">A</span>cadix</h1>
+    <!-- القائمة الجانبية -->
+    <div class="sidebar">
+        <div class="logo-area">
+            <div class="brand-name"><span style="color:#c084fc;">A</span>cadix</div>
         </div>
-
-        <div class="card-container">
-            <form id="searchForm" method="POST">
-                <div class="search-box">
-                    <input type="text" id="topicInput" name="topic" class="search-input" placeholder="ما المجال أو المهارة التي ترغب باحترافه اليوم؟" required>
-                </div>
-                <button type="submit" id="submitBtn" class="submit-btn">توليد الخريطة الذكية واستعراض المصادر</button>
-            </form>
-
-            <div class="loader" id="loaderText">جاري توليد خريطة الطريق الشاملة وجمع الدورات من المصادر العالمية...</div>
-
-            {% if searched %}
-                <div class="ai-roadmap-box">
-                    <div class="ai-title">✨ خارطة الطريق التعليمية الشاملة من Acadix AI</div>
-                    <div class="ai-content">{{ roadmap }}</div>
-                </div>
-
-                <div class="results-section">
-                    <div class="section-subtitle">📚 أرشيف الدورات ومصادر التعلم المباشرة:</div>
-                    {% for course in courses %}
-                        <div class="course-card">
-                            <div class="course-platform">{{ course.platform }}</div>
-                            <div class="course-title">{{ course.title }}</div>
-                            <a href="{{ course.link }}" target="_blank" class="course-link">الانتقال للمحتوى ↗</a>
-                        </div>
-                    {% endfor %}
-                </div>
-            {% endif %}
+        
+        <div class="nav-links">
+            <div class="nav-link active" onclick="switchTab('home')"> الرئيسية (Home)</div>
+            <div class="nav-link" onclick="switchTab('explore')"> استكشاف (Explore)</div>
+            <div class="nav-link" onclick="switchTab('roadmaps')"> خريطة الطرق (Roadmaps)</div>
+            <div class="nav-link" onclick="switchTab('library')"> المكتبة (Library)</div>
         </div>
     </div>
 
-    <script>
-        const form = document.getElementById('searchForm');
-        const loader = document.getElementById('loaderText');
-        const submitBtn = document.getElementById('submitBtn');
-        const inputField = document.getElementById('topicInput');
+    <!-- منطقة المحتوى الرئيسية -->
+    <div class="main-content">
+        
+        <!-- قسم الرئيسية -->
+        <div id="home-tab" class="tab-section active-tab">
+            <div class="hero-banner">
+                <h1 class="hero-title">التعلم المدعوم بالذكاء الاصطناعي <span>يبدأ من هنا</span></h1>
+                <p class="hero-desc">Acadix محرك بحث تعليمي ذكي يساعدك على اكتشاف، تعلم، وإتقان أي مجال مع خرائط طريق مخصصة ومصادر مجانية.</p>
+                
+                <form method="POST" id="searchForm">
+                    <div class="search-box-flex">
+                        <input type="text" name="topic" class="search-input" placeholder="ما المجال أو المهارة التي ترغب باحترافه اليوم؟" required>
+                        <button type="submit" class="submit-btn">بحث وتوليد</button>
+                    </div>
+                </form>
+                
+                <div class="tags-row">
+                    <span class="tag-pill" onclick="quickSearch('الذكاء الاصطناعي')">الذكاء الاصطناعي</span>
+                    <span class="tag-pill" onclick="quickSearch('علوم البيانات')">علوم البيانات</span>
+                    <span class="tag-pill" onclick="quickSearch('تطوير الويب')">تطوير الويب</span>
+                    <span class="tag-pill" onclick="quickSearch('الأمن السيبراني')">الأمن السيبراني</span>
+                    <span class="tag-pill" onclick="quickSearch('تصميم UI/UX')">تصميم UI/UX</span>
+                </div>
+            </div>
 
-        form.addEventListener('submit', function(e) {
-            if(inputField.value.trim() !== "") {
-                submitBtn.style.opacity = '0.7';
-                submitBtn.disabled = true;
-                submitBtn.innerText = 'جاري التحليل والبناء...';
-                loader.style.display = 'block';
-            }
-        });
+            {% if searched %}
+            <div class="ai-roadmap-box" id="roadmapContainer">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(192, 132, 252, 0.2); padding-bottom: 8px;">
+    <div class="section-title" style="margin-bottom: 0;"> خارطة الطريق التعليمية الشاملة</div>
+        <!-- زر التحميل -->
+        <button onclick="downloadRoadmapAsImage()" style="background: linear-gradient(135deg, #8A40BB, #3b82f6); color: white; border: none; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+             تحميل كصورة
+            </button>
+        </div>
+    <div class="ai-content">{{ roadmap }}</div>
+    </div>
+                <div class="ai-roadmap-box">
+                    <div class="section-title"> خارطة الطريق التعليمية الشاملة</div>
+                    <div class="ai-content">{{ roadmap }}</div>
+                </div>
+
+                <div>
+                    <div class="section-title"> مصادر التعلم المباشرة والدورات المقترحة:</div>
+                    <div class="courses-grid">
+                        {% for course in courses %}
+                            <div class="course-card">
+                                <div class="course-platform">{{ course.platform }}</div>
+                                <div class="course-title">{{ course.title }}</div>
+                                <a href="{{ course.link }}" target="_blank" class="course-link">الانتقال للمحتوى ↗</a>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- قسم استكشاف -->
+        <div id="explore-tab" class="tab-section">
+            <div class="section-box">
+                <div class="section-title"> استكشاف المجالات الأكثر طلباً</div>
+                <div class="courses-grid">
+                    <div class="course-card" onclick="quickSearch('برمجة الذكاء الاصطناعي')" style="cursor:pointer;">
+                        <div class="course-platform">تكنولوجيا</div>
+                        <div class="course-title"> الذكاء الاصطناعي وتعلم الآلة</div>
+                    </div>
+                    <div class="course-card" onclick="quickSearch('تطوير المواقع Full Stack')" style="cursor:pointer;">
+                        <div class="course-platform">برمجة</div>
+                        <div class="course-title"> تطوير المواقع التطبيقية الكاملة</div>
+                    </div>
+                    <div class="course-card" onclick="quickSearch('الأمن السيبراني والختبار الاختراق')" style="cursor:pointer;">
+                        <div class="course-platform">أمن المعلومات</div>
+                        <div class="course-title"> الأمن السيبراني والحماية</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- قسم خريطة الطرق الجاهزة -->
+        <div id="roadmaps-tab" class="tab-section">
+            <div class="section-box">
+                <div class="section-title"> خرائط طريق تعليمية مقترحة</div>
+                <div style="font-size: 13px; color: #cbd5e1; line-height: 1.8;">
+                    يمكنك كتابة اسم أي مجال في مربع البحث الرئيسي بالصفحة الرئيسية لتوليد خريطة طريق مخصصة بالذكاء الاصطناعي فوراً.
+                </div>
+            </div>
+        </div>
+
+        <!-- قسم المكتبة -->
+        <div id="library-tab" class="tab-section">
+            <div class="section-box">
+                <div class="section-title"> أفضل المنصات والمصادر العالمية</div>
+                <div class="courses-grid">
+                    <div class="course-card"><div class="course-platform">منصة عالمية</div><div class="course-title">Coursera</div><a href="https://www.coursera.org" target="_blank" class="course-link">زيارة المنصة ↗</a></div>
+                    <div class="course-card"><div class="course-platform">منصة عربية</div><div class="course-title">إدراك (Edraak)</div><a href="https://www.edraak.org" target="_blank" class="course-link">زيارة المنصة ↗</a></div>
+                    <div class="course-card"><div class="course-platform">منصة مجانية</div><div class="course-title">Alison</div><a href="https://alison.com" target="_blank" class="course-link">زيارة المنصة ↗</a></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+
+
+    <script>
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-section').forEach(el => el.classList.remove('active-tab'));
+            document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
+            
+            document.getElementById(tabName + '-tab').classList.add('active-tab');
+            event.currentTarget.classList.add('active');
+        }
+
+        function quickSearch(topic) {
+            switchTab('home');
+            const input = document.querySelector('input[name="topic"]');
+            input.value = topic;
+            document.getElementById('searchForm').submit();
+        }
+        function downloadRoadmapAsImage() {
+        const roadmapElement = document.getElementById('roadmapContainer');
+    
+    // إظهار تنبيه بسيط للمستخدم أثناء المعالجة
+    const btn = event.target;
+    const originalText = btn.innerHTML;
+    btn.innerText = 'جاري الإنشاء...';
+    html2canvas(roadmapElement, {
+    backgroundColor: '#12131a', // خلفية داكنة متناسقة مع الموقع
+    scale: 2 // زيادة الجودة والدقة للضعف
+    }).then(canvas => {
+    // إنشاء رابط تنزيل تلقائي
+    const link = document.createElement('a');
+    link.download = 'Acadix-Roadmap.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+        
+    // إعادة النص الأصلي للزر
+    btn.innerHTML = originalText;
+    }).catch(err => {
+        console.error('Error generating image:', err);
+        btn.innerHTML = originalText;
+        alert('حدث خطأ أثناء تحميل الصورة، يرجى المحاولة مرة أخرى.');
+    });
+}
     </script>
 </body>
 </html>
@@ -401,11 +343,9 @@ def home():
                 courses = search_courses(topic)
                 searched = True
     except Exception as e:
-        print(f"CRITICAL ROUTE ERROR: {str(e)}")
-        roadmap = "حدث خطأ غير متوقع أثناء معالجة طلبك، يرجى المحاولة مرة أخرى."
-        courses = []
+        print(f"Error: {str(e)}")
+        roadmap = "حدث خطأ غير متوقع، يرجى المحاولة مرة أخرى."
         searched = True
-        
     return render_template_string(HTML_TEMPLATE, searched=searched, roadmap=roadmap, courses=courses)
 
 if __name__ == "__main__":
