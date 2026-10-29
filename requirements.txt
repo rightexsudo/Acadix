@@ -2,3 +2,4 @@ Flask
 youtube-search-python
 requests
 groq
+gunicorn
