@@ -7,7 +7,7 @@ from groq import Groq
 app = Flask(__name__)
 
 # تهيئة مفتاح وعميل Groq
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "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")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 client = Groq(api_key=GROQ_API_KEY)
 
 def get_detailed_ai_roadmap(search_topic):
