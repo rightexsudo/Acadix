@@ -1,49 +1,122 @@
 from flask import Flask, render_template_string, request
 import os
+import json
+import time
+import threading
 import urllib.parse
 from youtubesearchpython import VideosSearch
-from groq import Groq
+from groq import Groq, RateLimitError
 
 app = Flask(__name__)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 client = Groq(api_key=GROQ_API_KEY)
 
+# ---------- نماذج Groq: سلسلة احتياطية (لكل موديل حصة مجانية مستقلة) ----------
+MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+]
+LEVELS = ("مبتدئ", "متوسط", "متقدم")
+_lock = threading.Lock()
+_resting = {}   # الموديل -> وقت العودة إليه بعد نفاد حصته
+_cache = {}     # مفتاح -> (وقت, نص الخريطة)
+_hits = {}      # IP -> أوقات الطلبات الجديدة
+CACHE_TTL = 6 * 3600
+
+_pop = os.path.join(os.path.dirname(os.path.abspath(__file__)), "popular.json")
+try:
+    with open(_pop, encoding="utf-8") as f:
+        POPULAR = json.load(f)   # خرائط جاهزة للمواضيع الشائعة (بلا استهلاك API)
+except Exception:
+    POPULAR = {}
+
+def ask_groq(prompt):
+    now = time.time()
+    for model in MODELS:
+        if _resting.get(model, 0) > now:
+            continue
+        try:
+            extra = {"extra_body": {"reasoning_effort": "low"}} if "gpt-oss" in model else {}
+            r = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=2200,
+                **extra,
+            )
+            text = r.choices[0].message.content
+            if text and text.strip():
+                return text
+        except RateLimitError:
+            _resting[model] = now + 600   # يرتاح 10 دقائق
+            print(f"حد الاستخدام: {model}")
+        except Exception as e:
+            print(f"خطأ في {model}: {e}")
+    return None
+
+def all_busy():
+    now = time.time()
+    return all(_resting.get(m, 0) > now for m in MODELS)
+
+def _key(topic, level):
+    return f"{topic.strip().lower()}|{level}"
+
+def lookup(topic, level):
+    k = _key(topic, level)
+    if k in POPULAR:
+        return POPULAR[k]
+    with _lock:
+        hit = _cache.get(k)
+        if hit and time.time() - hit[0] < CACHE_TTL:
+            return hit[1]
+    return None
+
+def generate(topic, level):
+    text = get_detailed_ai_roadmap(topic, level)
+    if text:
+        with _lock:
+            if len(_cache) > 500:
+                _cache.clear()
+            _cache[_key(topic, level)] = (time.time(), text)
+    return text
+
+def too_many(ip, limit=6, window=3600):
+    now = time.time()
+    with _lock:
+        recent = [t for t in _hits.get(ip, []) if now - t < window]
+        blocked = len(recent) >= limit
+        if not blocked:
+            recent.append(now)
+        _hits[ip] = recent
+        if len(_hits) > 5000:
+            _hits.clear()
+        return blocked
+
+@app.route("/health")
+def health():
+    return "ok"
+
 def get_detailed_ai_roadmap(search_topic , level="مبتدئ"):
     prompt = f"""
     أنت مستشار أكاديمي وخبير تعليمي رفيع المستوى. بصفتك موجهًا ومستشارًا في مجال '{search_topic}', قم بإعداد "خارطة طريق شمولية واحترافية" باللغة العربية مخصصة لشخص مستواه حالياً: [{level}].
 
-    يرجى تنظيم الإجابة باستخدام تنسيق Markdown العادي وواضح (استخدم ## للعناوين و - للنقاط و - [ ] لمربعات الإنجاز):
+    التزم بهذه البنية بالضبط (Markdown):
 
-    **الملخص التنفيذي:**
-    - أفكار جوهرية عن أهمية مجال '{search_topic}' لمستوى ({level}).
+    ## الملخص التنفيذي
+    - ثلاث نقاط موجزة عن أهمية '{search_topic}' لمستوى ({level}).
 
-     **مراحل خارطة الطريق (6 خطوات):**
-    1.  المرحلة الأولى: التأسيس والبناء
-    2.  المرحلة الثانية: التوسع والتمكين
-    3.  المرحلة الثالثة: الاحتراف وسوق العمل
+    ## المرحلة 1: عنوان قصير
+    جملة واحدة تصف المرحلة.
+    - [ ] مهمة قصيرة وواضحة
+    - [ ] مهمة قصيرة وواضحة
 
-    💡 **ملاحظة:** أضف في كل مرحلة 2-3 مهام قابلة للتحديد كـ Checkbox باستخدام الصيغة: `- [ ] اسم المهارة أو الدورة`
+    كرر نفس الشكل للمراحل 2 إلى 4 (تأسيس، توسع، احتراف، سوق العمل)، من 3 إلى 5 مهام لكل مرحلة، ولا تضف أي نص خارج هذه البنية.
     """
 
-    try:
-        print(f"جاري إرسال الطلب إلى Groq AI...")
-        
-        completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=4000
-        )
-        
-        content = completion.choices[0].message.content
-        if content and len(content.strip()) > 0:
-            print("تم توليد خريطة الطريق بنجاح!")
-            return content
-
-    except Exception as e:
-        print(f"⚠️ خطأ في الاتصال بـ Groq: {str(e)}")
-        return "Sorry Eror in backend , plase Send Eror for support.acadix@protonmail.com"
+    return ask_groq(prompt)
 
 def search_courses(search_topic):
     courses = []
@@ -78,7 +151,7 @@ def search_courses(search_topic):
     courses.extend(platforms_search)
     return courses
 
-HTML_TEMPLATE = """
+HTML_TEMPLATE = r"""
 <!doctype html>
 <html lang="ar" dir="rtl">
   <head>
@@ -87,237 +160,114 @@ HTML_TEMPLATE = """
     <title>Acadix - خارطة طريقك التعليمية</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Aref+Ruqaa:wght@400;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <style>
-      :root {
-        --bg: #0c0d10;
-        --surface: rgba(255, 255, 255, 0.05);
-        --border: rgba(255, 255, 255, 0.1);
-        --text: #e8e9ee;
-        --muted: #9ca3af;
-        --violet: #8b5cf6;
-        --blue: #3b82f6;
-        --green: #22c55e;
-        --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
-      }
-
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      html, body { background: var(--bg); }
-      body {
-        font-family: 'Tajawal', Tahoma, Arial, sans-serif;
-        color: var(--text);
-        line-height: 1.5;
-        min-height: 100vh;
-        overflow-x: hidden;
-      }
-      h1, h2, h3, h4 { line-height: 1.2; font-weight: 700; }
-      button, input, select { font: inherit; color: inherit; }
-      svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-      .icon { width: 18px; height: 18px; flex: none; }
-      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); opacity: 0; }
-      .muted { color: var(--muted); }
-
-      .bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
-      .bg::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background-image:
-          linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
-        background-size: 48px 48px;
-        mask-image: radial-gradient(ellipse at center, #000 30%, transparent 80%);
-        -webkit-mask-image: radial-gradient(ellipse at center, #000 30%, transparent 80%);
-      }
-      .blob {
-        position: absolute;
-        width: 520px;
-        height: 520px;
-        border-radius: 50%;
-        filter: blur(110px);
-        opacity: 0.35;
-        animation: pulse 8s ease-in-out infinite;
-      }
-      .blob-violet { background: var(--violet); top: -120px; right: -120px; }
-      .blob-blue { background: var(--blue); bottom: -160px; left: -120px; animation-delay: -4s; }
-
-      .glass {
-        background: rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(18px) saturate(140%);
-        -webkit-backdrop-filter: blur(18px) saturate(140%);
-        border: 1px solid var(--border);
-        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
-      }
-
-      .app { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
-
-      .sidebar {
-        position: sticky;
-        top: 0;
-        height: 100vh;
-        padding: 32px 20px;
-        display: flex;
-        flex-direction: column;
-        gap: 32px;
-        border-inline-end: 1px solid var(--border);
-        background: rgba(12, 13, 16, 0.6);
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-      }
-      .logo { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 22px; }
-      .logo-mark {
-        width: 44px;
-        height: 44px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(59, 130, 246, 0.2));
-        border: 1px solid rgba(139, 92, 246, 0.4);
-        border-radius: 12px;
-        box-shadow: 0 0 20px rgba(139, 92, 246, 0.35);
-        overflow: hidden;
-      }
-      .logo-mark img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; }
-      .nav { display: flex; flex-direction: column; gap: 8px; }
-      .nav-btn {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 12px 16px;
-        border-radius: 12px;
-        border: 1px solid transparent;
-        background: transparent;
-        color: var(--muted);
-        font-size: 16px;
-        font-weight: 500;
-        cursor: pointer;
-        transition: color 0.3s, background 0.3s, border-color 0.3s, transform 0.3s var(--ease);
-      }
-      .nav-btn:hover { color: var(--text); background: var(--surface); transform: translateX(-3px); }
-      .nav-btn[aria-current='page'] {
-        color: #fff;
-        background: linear-gradient(90deg, rgba(139, 92, 246, 0.28), rgba(59, 130, 246, 0.08));
-        border-color: rgba(139, 92, 246, 0.45);
-        box-shadow: 0 0 20px rgba(139, 92, 246, 0.2);
-      }
-      .sidebar-foot { margin-top: auto; color: var(--muted); font-size: 13px; }
-
-      .main { padding: 48px 56px 80px; min-width: 0; }
-      .view { display: none; max-width: 1000px; margin: 0 auto; }
-      .view.active { display: block; animation: fadeIn 0.5s ease both; }
-
-      .eyebrow {
-        display: inline-flex;
-        padding: 6px 14px;
-        border-radius: 999px;
-        border: 1px solid rgba(139, 92, 246, 0.4);
-        background: rgba(139, 92, 246, 0.1);
-        color: #c4b5fd;
-        font-size: 14px;
-      }
-      .hero { text-align: center; margin-bottom: 40px; }
-      .hero h1 { font-size: clamp(32px, 5vw, 56px); margin: 20px 0 12px; }
-      .hero p { color: var(--muted); font-size: 18px; max-width: 620px; margin: 0 auto; }
-      .gradient-text {
-        background: linear-gradient(90deg, #c4b5fd, #60a5fa);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-      }
-
-      .search {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        padding: 12px;
-        border-radius: 20px;
-        transition: box-shadow 0.4s, border-color 0.4s;
-      }
-      .search:focus-within {
-        border-color: var(--violet);
-        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.6), 0 0 36px rgba(139, 92, 246, 0.55);
-      }
-      .search-row { display: flex; align-items: center; gap: 12px; padding: 0 12px; color: var(--muted); }
-      .search-input {
-        flex: 1;
-        min-width: 0;
-        background: transparent;
-        border: none;
-        outline: none;
-        font-size: 19px;
-        padding: 16px 0;
-        color: var(--text);
-      }
-      .search-input::placeholder { color: #8b92a0; }
-      .search-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-      .select-wrap select {
-        appearance: none;
-        background-color: rgba(255, 255, 255, 0.06);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 12px 40px 12px 16px;
-        cursor: pointer;
-        color: var(--text);
-      }
-      .select-wrap select option { background: #16171d; color: var(--text); }
-      .generate-btn {
-        margin-inline-start: auto;
-        padding: 14px 26px;
-        border-radius: 12px;
-        border: none;
-        font-weight: 700;
-        color: #fff;
-        background: linear-gradient(135deg, #7c3aed, #3b82f6);
-        box-shadow: 0 10px 30px rgba(124, 58, 237, 0.35);
-        cursor: pointer;
-        transition: transform 0.25s var(--ease);
-      }
-      .generate-btn:hover { transform: translateY(-2px); box-shadow: 0 14px 36px rgba(124, 58, 237, 0.5); }
-
-      .tags { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 24px; }
-      .tags-inline { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-      .tag {
-        padding: 8px 16px;
-        border-radius: 999px;
-        border: 1px solid var(--border);
-        background: var(--surface);
-        font-size: 15px;
-        cursor: pointer;
-        color: var(--text);
-        transition: transform 0.25s var(--ease), border-color 0.25s;
-      }
-      .tag:hover { transform: translateY(-3px); border-color: rgba(139, 92, 246, 0.6); }
-
-      .output { margin-top: 48px; }
-      .roadmap-box { padding: 32px; border-radius: 20px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); margin-bottom: 32px; }
-      .roadmap-box h2 { font-size: 26px; margin-bottom: 16px; color: #c4b5fd; }
-      .roadmap-content { white-space: pre-line; line-height: 1.8; font-size: 16px; color: var(--text); }
-
-      .resource-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; margin-top: 20px; }
-      .resource {
-        padding: 20px;
-        border-radius: 16px;
-        text-decoration: none;
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid var(--border);
-        transition: transform 0.3s;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .resource:hover { transform: translateY(-5px); border-color: var(--violet); }
-      .resource h4 { font-size: 17px; color: #fff; }
-      .resource p { color: var(--muted); font-size: 13px; }
-
-      .category-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
-      .category { padding: 24px; border-radius: 20px; }
-      .category h3 { font-size: 20px; margin-bottom: 12px; color: #c4b5fd; }
-
-      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-      @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.5; } }
-    </style>
+:root{--bg:#060918;--panel:#0c1230;--line:#232c5c;--text:#ece7d6;--muted:#98a0c4;--gold:#f2c14e;--violet:#7b5cff;--ease:cubic-bezier(.2,.7,.2,1)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg)}
+body{font-family:'IBM Plex Sans Arabic',Tahoma,Arial,sans-serif;color:var(--text);line-height:1.6;min-height:100dvh;overflow-x:hidden}
+h1,h2,h3,h4{font-family:'Aref Ruqaa','IBM Plex Sans Arabic',serif;line-height:1.35;font-weight:700}
+button,input,select{font:inherit;color:inherit}
+svg{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.icon{width:18px;height:18px;flex:none}
+.muted{color:var(--muted)}
+:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
+.bg{position:fixed;inset:0;z-index:-1;pointer-events:none;background:radial-gradient(ellipse at 80% 0,#1a1450 0,transparent 55%),radial-gradient(ellipse at 10% 100%,#0e2250 0,transparent 50%)}
+.bg canvas{position:absolute;inset:0;width:100%;height:100%}
+.blob{display:none}
+.glass{background:rgba(12,18,48,.72);border:1px solid var(--line);border-radius:18px}
+.app{display:grid;grid-template-columns:230px 1fr;min-height:100dvh}
+.sidebar{position:sticky;top:0;height:100dvh;padding:30px 18px;display:flex;flex-direction:column;gap:30px;border-inline-end:1px solid var(--line);background:rgba(6,9,24,.7)}
+.logo{display:flex;align-items:center;gap:12px;font-size:24px;font-family:'Aref Ruqaa',serif}
+.logo-mark{width:42px;height:42px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0c1230}
+.nav{display:flex;flex-direction:column;gap:6px}
+.nav-btn{display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:12px;border:1px solid transparent;background:none;color:var(--muted);cursor:pointer;transition:.25s}
+.nav-btn:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.nav-btn[aria-current=page]{color:var(--gold);border-color:var(--line);background:rgba(242,193,78,.06)}
+.sidebar-foot{margin-top:auto;color:var(--muted);font-size:13px}
+.main{padding:48px 48px 90px;min-width:0}
+.view{display:none;max-width:980px;margin:0 auto}
+.view.active{display:block;animation:fi .5s both}
+.section-head{margin-bottom:28px}.section-head h1{font-size:34px}.section-head p{color:var(--muted)}
+.eyebrow{color:var(--gold);font-size:15px}
+.hero{text-align:center;margin:20px 0 36px}
+.hero h1{font-size:clamp(36px,6vw,64px);margin:10px 0 14px}
+.hero p{color:var(--muted);font-size:18px;max-width:600px;margin:auto}
+.gradient-text{color:var(--gold);text-shadow:0 0 28px rgba(242,193,78,.55)}
+.search{display:flex;flex-direction:column;gap:10px;padding:12px;transition:.3s}
+.search:focus-within{border-color:var(--gold);box-shadow:0 0 40px rgba(242,193,78,.18)}
+.search-row{display:flex;align-items:center;gap:12px;padding:0 12px;color:var(--muted)}
+.search-input{flex:1;min-width:0;background:none;border:0;outline:0;font-size:19px;padding:14px 0}
+.search-input::placeholder{color:#6f78a3}
+.search-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.select-wrap select{appearance:none;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:12px;padding:11px 16px;cursor:pointer}
+.select-wrap select option{background:#0c1230}
+.generate-btn{margin-inline-start:auto;padding:13px 26px;border-radius:12px;border:0;font-weight:600;background:var(--gold);color:#1b1500;cursor:pointer;transition:.25s var(--ease)}
+.generate-btn:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(242,193,78,.35)}
+.tags,.tags-inline{display:flex;flex-wrap:wrap;gap:10px}.tags{justify-content:center;margin-top:22px}.tags-inline{margin-top:14px}
+.tag{padding:7px 15px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.03);cursor:pointer;font-size:15px;transition:.25s}
+.tag:hover{border-color:var(--gold);color:var(--gold)}
+.category-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:18px}
+.category{padding:22px}.category h3{font-size:22px;color:var(--gold)}
+/* sky */
+#sky{margin-top:44px}
+.sky-head{display:flex;align-items:center;gap:22px;flex-wrap:wrap;margin-bottom:22px}
+.sky-head h2{font-size:clamp(26px,4vw,40px);flex:1;min-width:200px}
+.ring{width:96px;height:96px;position:relative;flex:none}
+.ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ring b{position:absolute;inset:0;display:grid;place-items:center;font-size:20px;color:var(--gold)}
+.ring circle{stroke-width:5}.ring .tr{stroke:var(--line)}.ring .pg{stroke:var(--gold);transition:stroke-dashoffset .8s var(--ease);filter:drop-shadow(0 0 6px rgba(242,193,78,.7))}
+.sum{padding:20px 24px;margin-bottom:22px;color:var(--muted)}.sum li{margin-inline-start:18px}.sum strong{color:var(--text)}
+.phases{position:relative;display:flex;flex-direction:column;gap:20px}
+.phase{display:grid;grid-template-columns:220px 1fr;gap:8px;padding:20px;position:relative;transition:border-color .5s,box-shadow .5s}
+.phase.done{border-color:rgba(242,193,78,.6);box-shadow:0 0 50px rgba(242,193,78,.12)}
+.const{width:100%;height:auto;overflow:visible}
+.const line{stroke:var(--line);stroke-width:1.5;stroke-dasharray:4 5;transition:.6s}
+.const line.on{stroke:var(--gold);stroke-dasharray:none;filter:drop-shadow(0 0 4px var(--gold))}
+.const circle{fill:#3a4482;stroke:none;transition:.5s}
+.const circle.on{fill:var(--gold);r:7;filter:drop-shadow(0 0 8px var(--gold));animation:tw 3s infinite}
+.pname{font-size:13px;color:var(--gold);margin-top:4px;text-align:center}
+.phase h3{font-size:24px}.phase .d{color:var(--muted);margin:2px 0 12px}
+.task{display:flex;gap:12px;align-items:flex-start;padding:9px 6px;cursor:pointer;border-radius:10px}
+.task:hover{background:rgba(255,255,255,.04)}
+.task input{appearance:none;width:20px;height:20px;margin-top:4px;border:1.5px solid var(--muted);border-radius:50%;flex:none;display:grid;place-items:center;cursor:pointer;transition:.3s}
+.task input:checked{background:var(--gold);border-color:var(--gold);box-shadow:0 0 12px var(--gold)}
+.task input:checked+span{color:var(--muted);text-decoration:line-through}
+.note{color:var(--muted);font-size:15px;margin-top:6px}
+.beacons h3{font-size:26px;margin:36px 0 14px}
+.resource-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.resource{display:flex;flex-direction:column;gap:6px;padding:16px;border-radius:14px;text-decoration:none;border:1px solid var(--line);background:rgba(12,18,48,.7);transition:.3s}
+.resource:hover{transform:translateY(-4px);border-color:var(--gold)}
+.resource h4{font-size:17px;color:var(--gold);font-family:'IBM Plex Sans Arabic';font-weight:600}.resource p{font-size:14px;color:var(--muted)}
+.tools{display:flex;justify-content:flex-end;margin-bottom:12px}
+.err{padding:26px;text-align:center;color:#f4a3a3}
+.lib{display:flex;align-items:center;gap:14px;padding:16px 20px;margin-bottom:12px}
+.lib div{flex:1}.lib h3{font-size:22px;color:var(--gold)}.lib small{color:var(--muted)}
+.lib button{padding:8px 16px;border-radius:10px;border:1px solid var(--line);background:none;cursor:pointer}
+.lib .del:hover{border-color:#f87171;color:#f87171}
+.loader{position:fixed;inset:0;z-index:50;display:none;place-items:center;background:rgba(6,9,24,.92);text-align:center}
+.loader.on{display:grid}
+.loader svg{width:min(320px,70vw)}
+.loader polyline{stroke:var(--gold);stroke-width:2;stroke-dasharray:420;stroke-dashoffset:420;animation:dr 2.4s ease-in-out infinite}
+.loader circle{fill:var(--gold);animation:tw 1.6s infinite}
+.loader p{font-family:'Aref Ruqaa',serif;font-size:26px;margin-top:14px}
+@keyframes fi{from{opacity:0}to{opacity:1}}
+@keyframes tw{50%{opacity:.55}}
+@keyframes dr{0%{stroke-dashoffset:420}60%,100%{stroke-dashoffset:0}}
+@media(max-width:820px){
+.app{display:block}
+.sidebar{position:fixed;inset:auto 0 0 0;height:auto;z-index:20;flex-direction:row;padding:8px;border:0;border-top:1px solid var(--line);background:rgba(6,9,24,.94)}
+.logo,.sidebar-foot{display:none}.nav{flex-direction:row;flex:1;justify-content:space-around}
+.nav-btn{flex-direction:column;gap:2px;padding:6px 14px;font-size:13px}
+.main{padding:28px 18px 110px}.phase{grid-template-columns:1fr}.const{max-width:240px;margin:auto}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
   </head>
   <body>
+    <script id="boot" type="application/json">{{ payload | tojson }}</script>
+    <div class="loader" id="loader" role="status"><div><svg viewBox="0 0 200 90"><polyline points="10,70 55,30 95,60 140,20 190,50"/><circle cx="10" cy="70" r="4"/><circle cx="55" cy="30" r="4"/><circle cx="95" cy="60" r="4"/><circle cx="140" cy="20" r="4"/><circle cx="190" cy="50" r="4"/></svg><p id="lmsg">نرصد السماء…</p></div></div>
     <div class="bg" aria-hidden="true">
       <span class="blob blob-violet"></span>
       <span class="blob blob-blue"></span>
@@ -365,7 +315,7 @@ HTML_TEMPLATE = """
       <main class="main">
         <section class="view active" id="view-home">
           <header class="hero">
-            <span class="eyebrow">خارطة طريق فورية</span>
+            <span class="eyebrow">ارسم سماءك التعليمية</span>
             <h1>ماذا تريد أن <span class="gradient-text">تتعلم</span> اليوم؟</h1>
             <p>اكتب أي مهارة أو مجال، واختر مستواك، وستحصل على خارطة طريق واضحة مع مصادر مقترحة.</p>
           </header>
@@ -397,28 +347,10 @@ HTML_TEMPLATE = """
             <button class="tag" type="button" onclick="quickSearch('تطوير الويب')">تطوير الويب</button>
             <button class="tag" type="button" onclick="quickSearch('الأمن السيبراني')">الأمن السيبراني</button>
             <button class="tag" type="button" onclick="quickSearch('تحليل البيانات')">تحليل البيانات</button>
+            <button class="tag" type="button" onclick="quickSearch('java programming')">java programming</button>
           </div>
 
-          {% if searched %}
-          <div class="output" id="output">
-            <div class="roadmap-box glass">
-              <h2>خارطة الطريق المقترحة</h2>
-              <div class="roadmap-content">{{ roadmap | safe }}</div>
-            </div>
-
-            <div class="roadmap-box glass">
-              <h2>مصادر تعلم مقترحة</h2>
-              <div class="resource-grid">
-                {% for course in courses %}
-                <a href="{{ course.link }}" target="_blank" class="resource">
-                  <h4>{{ course.platform }}</h4>
-                  <p>{{ course.title }}</p>
-                </a>
-                {% endfor %}
-              </div>
-            </div>
-          </div>
-          {% endif %}
+          <div id="sky" aria-live="polite"></div>
         </section>
 
         <section class="view" id="view-explore">
@@ -457,119 +389,90 @@ HTML_TEMPLATE = """
             <h1>مكتبتك</h1>
             <p>المخرجات السابقة والروابط المحفوظة.</p>
           </header>
-          <div class="glass" style="padding: 24px; border-radius: 16px; text-align: center; color: var(--muted);">
-            مكتبة الحفظ المحلية جاهزة.
-          </div>
+          <div id="library-list"></div>
         </section>
       </main>
     </div>
 
     <script>
-      // التنقل بين الأقسام
-      const navButtons = document.querySelectorAll('[data-nav]');
-      const views = document.querySelectorAll('.view');
-
-      navButtons.forEach(btn => {
-        btn.addEventListener('click', () => {
-          navButtons.forEach(b => b.removeAttribute('aria-current'));
-          btn.setAttribute('aria-current', 'page');
-          const target = btn.getAttribute('data-nav');
-          views.forEach(v => {
-            v.classList.toggle('active', v.id === `view-${target}`);
-          });
-        });
-      });
-
-      // دالة البحث السريع عند الضغط على الوسوم أو التصنيفات
-      function quickSearch(topic) {
-        document.getElementById('topic-input').value = topic;
-        document.getElementById('search-form').submit();
-      }
-    </script>
-    <script>
-  // التنقل بين الأقسام (الرئيسية، الاستكشاف، المكتبة)
-  const navButtons = document.querySelectorAll('[data-nav]');
-  const views = document.querySelectorAll('.view');
-
-  navButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      navButtons.forEach(b => b.removeAttribute('aria-current'));
-      btn.setAttribute('aria-current', 'page');
-      const target = btn.getAttribute('data-nav');
-      views.forEach(v => {
-        v.classList.toggle('active', v.id === `view-${target}`);
-      });
-      if (target === 'library') {
-        renderLibrary();
-      }
-    });
-  });
-
-  // البحث السريع عند الضغط على الوسوم
-  function quickSearch(topic) {
-    document.getElementById('topic-input').value = topic;
-    document.getElementById('search-form').submit();
-  }
-
-  // حفظ الخريطة الحالية في المكتبة تلقائياً عند توليدها
-  document.addEventListener("DOMContentLoaded", () => {
-    const roadmapBox = document.querySelector('.roadmap-content');
-    const topicInput = document.getElementById('topic-input');
-    
-    if (roadmapBox && topicInput && topicInput.value.trim() !== "") {
-      const topic = topicInput.value.trim();
-      const content = roadmapBox.innerHTML;
-      const date = new Date().toLocaleDateString('ar-JO');
-      
-      let library = JSON.parse(localStorage.getItem('acadix_library') || '[]');
-      
-      // عدم تكرار نفس الموضوع
-      if (!library.some(item => item.topic === topic)) {
-        library.unshift({ topic, content, date });
-        localStorage.setItem('acadix_library', JSON.stringify(library));
-      }
-    }
-  });
-
-  // دالة عرض الخرائط المحفوظة في صفحة "المكتبة"
-  function renderLibrary() {
-    const libraryContainer = document.getElementById('library-list');
-    if (!libraryContainer) return;
-
-    let library = JSON.parse(localStorage.getItem('acadix_library') || '[]');
-
-    if (library.length === 0) {
-      libraryContainer.innerHTML = `
-        <div class="glass" style="padding: 32px; border-radius: 16px; text-align: center; color: var(--muted);">
-          <h3>مكتبتك فارغة حالياً</h3>
-          <p>أي خارطة طريق تولدها ستظهر هنا تلقائياً.</p>
-        </div>
-      `;
-      return;
-    }
-
-    let html = '';
-    library.forEach((item, index) => {
-      html += `
-        <div class="glass" style="padding: 20px; border-radius: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <div>
-            <h3 style="color: #c4b5fd; font-size: 18px; margin-bottom: 4px;">${item.topic}</h3>
-            <span style="color: var(--muted); font-size: 13px;">تاريخ التوليد: ${item.date}</span>
-          </div>
-          <button onclick="deleteItem(${index})" style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); color: #fca5a5; padding: 8px 16px; border-radius: 8px; cursor: pointer;">حذف</button>
-        </div>
-      `;
-    });
-    libraryContainer.innerHTML = html;
-  }
-
-  // حذف عنصر من المكتبة
-  function deleteItem(index) {
-    let library = JSON.parse(localStorage.getItem('acadix_library') || '[]');
-    library.splice(index, 1);
-    localStorage.setItem('acadix_library', JSON.stringify(library));
-    renderLibrary();
-  }
+const $=(q,e=document)=>e.querySelector(q), boot=JSON.parse($('#boot').textContent);
+const STARS=['سُهيل','الشِّعرى','الدَّبَران','السِّماك','النَّسر الطائر','النَّسر الواقع','ذَنَب الدجاجة','قلب العقرب'];
+const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
+const svg=(t,a={})=>{const e=document.createElementNS('http://www.w3.org/2000/svg',t);for(const k in a)e.setAttribute(k,a[k]);return e};
+const store={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch(e){return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}};
+/* nav */
+const views=document.querySelectorAll('.view'),btns=document.querySelectorAll('[data-nav]');
+function show(n){if(!$('#view-'+n))n='home';btns.forEach(b=>b.dataset.nav===n?b.setAttribute('aria-current','page'):b.removeAttribute('aria-current'));views.forEach(v=>v.classList.toggle('active',v.id==='view-'+n));if(n==='library')renderLib()}
+btns.forEach(b=>b.addEventListener('click',()=>{location.hash=b.dataset.nav}));
+addEventListener('hashchange',()=>show(location.hash.slice(1)));
+/* starfield */
+(function(){const c=document.createElement('canvas'),x=c.getContext('2d');$('.bg').prepend(c);let W,H,S=[],px=0,py=0;
+const rs=()=>{const d=devicePixelRatio||1;W=c.width=innerWidth*d;H=c.height=innerHeight*d;S=Array.from({length:Math.min(160,innerWidth/6)},()=>({x:Math.random()*W,y:Math.random()*H,r:(Math.random()*1.3+.3)*d,p:Math.random()*6,z:Math.random()*.8+.2}))};
+rs();addEventListener('resize',rs);addEventListener('pointermove',e=>{px=e.clientX/innerWidth-.5;py=e.clientY/innerHeight-.5});
+const still=matchMedia('(prefers-reduced-motion:reduce)').matches;
+(function f(t){x.clearRect(0,0,W,H);for(const s of S){const a=still?.7:.45+.45*Math.sin(t/900+s.p);x.fillStyle='rgba(236,231,214,'+a+')';x.beginPath();x.arc(s.x-px*30*s.z,s.y-py*30*s.z,s.r,0,7);x.fill()}if(!still&&!document.hidden)requestAnimationFrame(f);else if(!still)setTimeout(()=>requestAnimationFrame(f),500)})(0)})();
+/* parse markdown -> structure (no HTML is ever injected) */
+function parse(md){const D={sum:[],phases:[],notes:[]};let cur=null,sec='sum';
+const clean=t=>t.replace(/`/g,'').replace(/^\s*(\d+[.)]|[-*•])\s+/,'').trim();
+for(let raw of md.split('\n')){const l=raw.trim();if(!l)continue;
+const h=l.match(/^#{1,4}\s*(.+)$/)||l.match(/^\*\*(.+?)\*\*:?$/);
+if(h){const t=h[1].replace(/\*\*/g,'').replace(/:$/,'').trim();
+if(/المرحلة|phase|stage/i.test(t)){cur={t:t.replace(/^المرحلة\s*[^:：]*[:：]\s*/,'')||t,d:'',tasks:[]};D.phases.push(cur);sec='p'}
+else{sec=D.phases.length?'n':'sum';cur=null}continue}
+const m=l.match(/^[-*]\s*\[( |x|X)\]\s*(.+)$/);
+if(m){if(!cur){cur={t:'مهام',d:'',tasks:[]};D.phases.push(cur);sec='p'}cur.tasks.push(m[2].replace(/\*\*|`/g,'').trim());continue}
+const txt=clean(l).replace(/\*\*/g,'');
+if(sec==='p'&&cur){if(!cur.d)cur.d=txt;else cur.tasks.push(txt)}else if(sec==='n')D.notes.push(txt);else D.sum.push(txt)}
+return D}
+function rng(a){return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function hash(s){let h=7;for(const c of s)h=Math.imul(h^c.charCodeAt(0),16777619);return h>>>0}
+/* render sky */
+function render(data){const box=$('#sky');box.replaceChildren();if(!data.roadmap){const e=el('div','glass err',data.notice||'تعذّر توليد الخارطة الآن. حاول مجدداً، أو راسلنا: support.acadix@protonmail.com');box.append(e);return}
+const D=parse(data.roadmap),key='acadix_done:'+data.topic+'|'+data.level,done=new Set(store.get(key,[]));
+const total=D.phases.reduce((n,p)=>n+p.tasks.length,0),R=36,C=2*Math.PI*R;
+const tools=el('div','tools'),dl=el('button','tag','📷 حفظ كصورة');dl.type='button';dl.onclick=downloadRoadmapImage;tools.append(dl);
+const head=el('div','sky-head'),h2=el('h2',null,data.topic),ring=el('div','ring');
+const rs=svg('svg',{viewBox:'0 0 80 80'}),tr=svg('circle',{cx:40,cy:40,r:R,class:'tr'}),pg=svg('circle',{cx:40,cy:40,r:R,class:'pg','stroke-dasharray':C,'stroke-dashoffset':C});rs.append(tr,pg);const pct=el('b',null,'0%');ring.append(rs,pct);head.append(h2,ring);
+const cap=el('div','sky-cap');cap.id='cap';
+box.append(tools,el('div','cap'),head);const cap0=box.lastChild.previousSibling;cap0.remove();
+if(D.sum.length){const s=el('div','glass sum'),u=el('ul');D.sum.forEach(x=>u.append(el('li',null,x)));s.append(u);box.append(s)}
+const wrap=el('div','phases'),upd=()=>{const n=done.size;const p=total?Math.round(n/total*100):0;pct.textContent=p+'%';pg.setAttribute('stroke-dashoffset',C*(1-p/100));store.set(key,[...done]);wrap.querySelectorAll('.phase').forEach(f=>f.classList.toggle('done',f.querySelectorAll('.task input').length>0&&[...f.querySelectorAll('.task input')].every(i=>i.checked)))};
+D.phases.forEach((p,pi)=>{const r=rng(hash(data.topic)+pi*97),n=Math.max(p.tasks.length,3),pts=[];
+for(let i=0;i<n;i++)pts.push([14+i*(172/(n-1))+(r()-.5)*10,16+r()*98]);
+const card=el('article','phase glass'),side=el('div'),g=svg('svg',{viewBox:'0 0 200 130',class:'const','aria-hidden':'true'}),ls=[],cs=[];
+for(let i=0;i<n-1;i++){const l=svg('line',{x1:pts[i][0],y1:pts[i][1],x2:pts[i+1][0],y2:pts[i+1][1]});ls.push(l);g.append(l)}
+pts.forEach(q=>{const c=svg('circle',{cx:q[0],cy:q[1],r:4.5});cs.push(c);g.append(c)});
+side.append(g,el('div','pname',STARS[(pi+hash(data.topic))%STARS.length]));
+const body=el('div'),h3=el('h3',null,'المرحلة '+(pi+1)+': '+p.t);body.append(h3);if(p.d)body.append(el('p','d',p.d));
+p.tasks.forEach((t,ti)=>{const id=pi+':'+ti,lb=el('label','task'),cb=el('input');cb.type='checkbox';cb.checked=done.has(id);
+const sync=()=>{cs.forEach((c,i)=>c.classList.toggle('on',i<p.tasks.length&&done.has(pi+':'+i)));ls.forEach((l,i)=>l.classList.toggle('on',done.has(pi+':'+i)&&done.has(pi+':'+(i+1))))};
+cb.onchange=()=>{cb.checked?done.add(id):done.delete(id);sync();upd()};lb.append(cb,el('span',null,t));body.append(lb);card._s=sync});
+card.append(side,body);wrap.append(card);card._s&&card._s()});
+box.append(wrap);
+if(D.notes.length){const nn=el('div','note');nn.textContent='💡 '+D.notes.join(' · ');box.append(nn)}
+const bc=el('div','beacons');bc.append(el('h3',null,'منارات للتعلّم'));const gr=el('div','resource-grid');
+(data.courses||[]).forEach(c=>{if(!/^https?:\/\//.test(c.link))return;const a=el('a','resource');a.href=c.link;a.target='_blank';a.rel='noopener noreferrer';a.append(el('h4',null,c.platform),el('p',null,c.title));gr.append(a)});
+bc.append(gr);box.append(bc);
+card0=null;wrap.querySelectorAll('.phase').forEach(f=>f._s&&f._s());upd();
+box.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion:reduce)').matches?'auto':'smooth',block:'start'})}
+var card0;
+/* library */
+function saveLib(d){if(!d.roadmap)return;let L=store.get('acadix_library',[]).filter(x=>!(x.topic===d.topic&&x.level===d.level));L.unshift({topic:d.topic,level:d.level,roadmap:d.roadmap,courses:d.courses,date:new Date().toLocaleDateString('ar-JO')});store.set('acadix_library',L.slice(0,30))}
+function renderLib(){const box=$('#library-list');box.replaceChildren();const L=store.get('acadix_library',[]);
+if(!L.length){box.append(el('div','glass err','مكتبتك فارغة. أي خارطة تولّدها ستُحفظ هنا تلقائياً.'));box.firstChild.style.color='var(--muted)';return}
+L.forEach((it,i)=>{const r=el('div','glass lib'),d=el('div');d.append(el('h3',null,it.topic),el('small',null,it.level+' · '+it.date));
+const o=el('button',null,'فتح'),x=el('button','del','حذف');
+o.onclick=()=>{location.hash='home';$('#topic-input').value=it.topic;$('#level-select').value=it.level;render(it)};
+x.onclick=()=>{L.splice(i,1);store.set('acadix_library',L);renderLib()};r.append(d,o,x);box.append(r)})}
+/* forms */
+function quickSearch(t){$('#topic-input').value=t;$('#search-form').requestSubmit()}
+const msgs=['نرصد السماء…','نصل النجوم بعضها ببعض…','نبحث عن منارات للتعلّم…'];
+$('#search-form').addEventListener('submit',()=>{$('#loader').classList.add('on');let i=0;setInterval(()=>{$('#lmsg').textContent=msgs[++i%msgs.length]},2600)});
+addEventListener('pageshow',()=>$('#loader').classList.remove('on'));
+function downloadRoadmapImage(){const e=$('#sky');if(!e||!window.html2canvas)return;html2canvas(e,{backgroundColor:'#060918',scale:2}).then(c=>{const a=document.createElement('a');a.download='acadix-roadmap.png';a.href=c.toDataURL('image/png');a.click()})}
+/* start */
+if(boot.searched){$('#topic-input').value=boot.topic||'';$('#level-select').value=boot.level||'مبتدئ';render(boot);saveLib(boot)}
+show(location.hash.slice(1)||'home');
 </script>
   </body>
 </html>
@@ -580,19 +483,35 @@ def home():
     searched = False
     courses = []
     roadmap = ""
+    topic = ""
+    level = "مبتدئ"
+    notice = ""
     try:
         if request.method == "POST":
-            topic = request.form.get("topic")
+            topic = (request.form.get("topic") or "").strip()[:80]
             level = request.form.get("level", "مبتدئ")
+            if level not in LEVELS:
+                level = "مبتدئ"
             if topic:
-                roadmap = get_detailed_ai_roadmap(topic, level)
-                courses = search_courses(topic)
                 searched = True
+                roadmap = lookup(topic, level)
+                if not roadmap:
+                    ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr
+                    if too_many(ip):
+                        notice = "وصلت إلى حد الخرائط الجديدة هذه الساعة. جرّب موضوعاً من الوسوم الشائعة أو عد لاحقاً."
+                    else:
+                        roadmap = generate(topic, level)
+                        if not roadmap and all_busy():
+                            notice = "الخدمة مشغولة الآن بسبب كثرة الطلبات. جرّب بعد دقائق."
+                if roadmap:
+                    courses = search_courses(topic)
     except Exception as e:
         print(f"Error: {str(e)}")
-        roadmap = "حدث خطأ غير متوقع، يرجى المحاولة مرة أخرى."
+        roadmap = ""
         searched = True
-    return render_template_string(HTML_TEMPLATE, searched=searched, roadmap=roadmap, courses=courses)
+    payload = {"searched": searched, "topic": topic, "level": level,
+               "roadmap": roadmap or "", "courses": courses, "notice": notice}
+    return render_template_string(HTML_TEMPLATE, payload=payload)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

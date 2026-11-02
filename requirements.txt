@@ -1,5 +1,5 @@
-Flask
-youtube-search-python
-requests
-groq
+flask
 gunicorn
+groq
+youtube-search-python
+httpx==0.27.2
